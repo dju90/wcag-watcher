@@ -7,7 +7,7 @@
 
 import { useState, useMemo, useCallback, useRef } from "react";
 
-const DEFAULT_API_URL = "https://your-scanner.onrender.com";
+const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
 
 const IMPACT_ORDER = { critical: 0, serious: 1, moderate: 2, minor: 3 };
 const IMPACT_COLORS = { critical: "#dc2626", serious: "#ea580c", moderate: "#ca8a04", minor: "#6b7280" };
