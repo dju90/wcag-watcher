@@ -1,10 +1,3 @@
-// =============================================================
-// Update the DEFAULT_API_URL at the top of the file to
-// your actual Render URL, e.g.:
-//
-//   const DEFAULT_API_URL = "https://a11y-scanner-api.onrender.com";
-// =============================================================
-
 import { useState, useMemo, useCallback, useRef } from "react";
 
 const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
