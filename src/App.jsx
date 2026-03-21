@@ -471,7 +471,7 @@ export default function App() {
   };
 
   const hasResults = scans.length > 0;
-  const apiConfigured = apiUrl && apiUrl !== DEFAULT_API_URL;
+  const apiConfigured = apiUrl && apiUrl.startsWith("http");
 
   return (
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", padding: 24, maxWidth: 1100, margin: "0 auto", color: "var(--text, #1f2937)" }}>
