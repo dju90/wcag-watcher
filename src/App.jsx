@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 
-const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
+const DEFAULT_API_URL = "https://your-scanner.onrender.com";
 
 const IMPACT_ORDER = { critical: 0, serious: 1, moderate: 2, minor: 3 };
 const IMPACT_COLORS = { critical: "#dc2626", serious: "#ea580c", moderate: "#ca8a04", minor: "#6b7280" };
@@ -162,6 +162,16 @@ function exportCSV(urls, scans) {
 }
 
 function ScanResultsView({ urls, scans, impactFilter, setImpactFilter, criterionFilter, setCriterionFilter, expandedV, setExpandedV }) {
+  const [openScreenshots, setOpenScreenshots] = useState(new Set());
+
+  const toggleScreenshot = (id) => {
+    setOpenScreenshots(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+
   const urlsWithResults = useMemo(() => {
     return urls.map(u => {
       const urlScans = scans.filter(s => s.urlId === u.id);
@@ -252,11 +262,27 @@ function ScanResultsView({ urls, scans, impactFilter, setImpactFilter, criterion
               ) : (
                 <>
                   <span style={{ fontSize: 11, color: "var(--text-secondary, #9ca3af)" }}>{new Date(u.latest.timestamp).toLocaleString()}</span>
+                  {u.latest.screenshot && (
+                    <Btn variant="secondary" onClick={(e) => { e.stopPropagation(); toggleScreenshot(u.id); }}
+                      style={{ padding: "3px 8px", fontSize: 11 }}>
+                      {openScreenshots.has(u.id) ? "Hide Screenshot" : "Screenshot"}
+                    </Btn>
+                  )}
                   <Badge label={`${u.violations.length} violation${u.violations.length !== 1 ? "s" : ""}`} color={u.violations.length > 0 ? "#dc2626" : "#16a34a"} />
                 </>
               )}
             </div>
           </div>
+          {openScreenshots.has(u.id) && u.latest.screenshot && (
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border, #e5e7eb)", background: "var(--bg-secondary, #f8f9fa)" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary, #6b7280)", marginBottom: 8 }}>Page screenshot at time of scan:</div>
+              <img
+                src={`data:image/png;base64,${u.latest.screenshot}`}
+                alt={`Screenshot of ${u.url}`}
+                style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid var(--border, #e5e7eb)", boxShadow: "0 2px 8px rgba(0,0,0,0.1)" }}
+              />
+            </div>
+          )}
           {u.latest.error ? (
             <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
               <strong>Scan failed:</strong> {u.latest.error}
@@ -423,7 +449,7 @@ export default function App() {
             const matchingUrl = toScan.find(u => u.url === result.url);
             if (!matchingUrl) continue;
 
-            if (result.status === "done") {
+                          if (result.status === "done") {
               const violations = result.violations.map((v, vi) => ({
                 ...v,
                 id: `${v.ruleId}-${vi}`,
@@ -435,6 +461,7 @@ export default function App() {
                 timestamp: result.timestamp,
                 violations,
                 passes: result.passes,
+                screenshot: result.screenshot || null,
               }]);
               setScanProgress(prev => prev.map(p =>
                 p.url === result.url ? { ...p, status: "done", violationCount: result.violations.length } : p
@@ -477,7 +504,7 @@ export default function App() {
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", padding: 24, maxWidth: 1100, margin: "0 auto", color: "var(--text, #1f2937)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 24 }}>WCAG Watcher</h1>
+          <h1 style={{ margin: 0, fontSize: 24 }}>A11y Monitor</h1>
           <div style={{ fontSize: 13, color: "var(--text-secondary, #6b7280)" }}>WCAG 2.1 Continuous Monitoring</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
