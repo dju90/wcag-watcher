@@ -493,7 +493,6 @@ function ScanResultsView({
     });
   }, [urlsWithResults, impactFilter, criterionFilter, resultType]);
 
-  const totalItems = filtered.reduce((s, u) => s + u.displayItems.length, 0);
   const totalN = filtered.reduce(
     (s, u) => s + u.displayItems.reduce((ns, v) => ns + v.nodes.length, 0),
     0,
@@ -506,6 +505,14 @@ function ScanResultsView({
     (s, u) => s + (u.latest.incomplete || []).length,
     0,
   );
+
+  const unfilteredItems = useMemo(() => {
+    return urlsWithResults.flatMap((u) =>
+      resultType === "violations"
+        ? u.latest.violations
+        : u.latest.incomplete || [],
+    );
+  }, [urlsWithResults, resultType]);
 
   if (urlsWithResults.length === 0) {
     return (
@@ -588,39 +595,6 @@ function ScanResultsView({
             ELEMENTS
           </div>
         </Card>
-        {resultType === "violations" &&
-          Object.entries(IMPACT_COLORS).map(([imp, col]) => {
-            const c = filtered.reduce(
-              (s, u) =>
-                s + u.displayItems.filter((v) => v.impact === imp).length,
-              0,
-            );
-            return (
-              <Card
-                key={imp}
-                style={{
-                  flex: 1,
-                  padding: 12,
-                  textAlign: "center",
-                  minWidth: 90,
-                }}
-              >
-                <div style={{ fontSize: 28, fontWeight: 700, color: col }}>
-                  {c}
-                </div>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: "var(--text-secondary, #6b7280)",
-                    fontWeight: 600,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {imp}
-                </div>
-              </Card>
-            );
-          })}
       </div>
 
       <div
@@ -641,16 +615,26 @@ function ScanResultsView({
           >
             Severity:
           </span>
-          {["all", "critical", "serious", "moderate", "minor"].map((f) => (
-            <Btn
-              key={f}
-              variant={impactFilter === f ? "primary" : "secondary"}
-              onClick={() => setImpactFilter(f)}
-              style={{ padding: "4px 10px", fontSize: 12 }}
-            >
-              {f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
-            </Btn>
-          ))}
+          {["all", "critical", "serious", "moderate", "minor"].map((f) => {
+            const count =
+              f === "all"
+                ? unfilteredItems.length
+                : unfilteredItems.filter((v) => v.impact === f).length;
+            const label =
+              f === "all"
+                ? `All (${count})`
+                : `${f.charAt(0).toUpperCase() + f.slice(1)} (${count})`;
+            return (
+              <Btn
+                key={f}
+                variant={impactFilter === f ? "primary" : "secondary"}
+                onClick={() => setImpactFilter(f)}
+                style={{ padding: "4px 10px", fontSize: 12 }}
+              >
+                {label}
+              </Btn>
+            );
+          })}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span
@@ -1114,6 +1098,7 @@ export default function App() {
         url: u.url,
         status: "scanning",
         violationCount: 0,
+        incompleteCount: 0,
       })),
     );
 
@@ -1202,6 +1187,7 @@ export default function App() {
                   urlId: matchingUrl.id,
                   timestamp: Date.now(),
                   violations: [],
+                  incomplete: [],
                   error: result.error,
                 },
               ]);
