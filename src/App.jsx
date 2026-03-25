@@ -231,6 +231,12 @@ function LoginConfigForm({ config, onChange }) {
           placeholder="••••••••"
         />
       </div>
+      <Input
+        label="Submit Button Selector (id or label)"
+        value={config.submitSelector}
+        onChange={(v) => onChange({ ...config, submitSelector: v })}
+        placeholder="signin-button"
+      />
       {config.extraFields.map((f, i) => (
         <div
           key={i}
@@ -290,11 +296,12 @@ function LoginConfigForm({ config, onChange }) {
 }
 
 const EMPTY_LOGIN = {
-  loginUrl: "",
-  usernameLabel: "Email",
+  loginUrl: "https://studio.code.org/users/sign_in",
+  usernameLabel: "user_login",
   usernameValue: "",
-  passwordLabel: "Password",
+  passwordLabel: "user_password",
   passwordValue: "",
+  submitSelector: "signin-button",
   extraFields: [],
 };
 
@@ -310,7 +317,11 @@ function buildLoginPayload(urlEntry) {
     if (f.label && f.value) fields.push({ label: f.label, value: f.value });
   }
   if (!c.loginUrl || fields.length === 0) return undefined;
-  return { loginUrl: c.loginUrl, fields };
+  return {
+    loginUrl: c.loginUrl,
+    fields,
+    submitSelector: c.submitSelector || undefined,
+  };
 }
 
 function UrlForm({ onSave, onCancel, initial }) {
@@ -582,7 +593,7 @@ function ScanResultsView({
         <Card
           style={{ flex: 1, padding: 12, textAlign: "center", minWidth: 100 }}
         >
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#ea580c" }}>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#000000" }}>
             {totalN}
           </div>
           <div
@@ -1238,7 +1249,7 @@ export default function App() {
         }}
       >
         <div>
-          <h1 style={{ margin: 0, fontSize: 24 }}>A11y Monitor</h1>
+          <h1 style={{ margin: 0, fontSize: 24 }}>WCAG Watcher</h1>
           <div
             style={{ fontSize: 13, color: "var(--text-secondary, #6b7280)" }}
           >
