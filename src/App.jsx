@@ -327,6 +327,7 @@ function buildLoginPayload(urlEntry) {
 function UrlForm({ onSave, onCancel, initial }) {
   const [url, setUrl] = useState(initial?.url || "");
   const [label, setLabel] = useState(initial?.label || "");
+  const [description, setDescription] = useState(initial?.description || "");
   const [requiresAuth, setRequiresAuth] = useState(
     initial?.requiresAuth || false,
   );
@@ -346,6 +347,12 @@ function UrlForm({ onSave, onCancel, initial }) {
         value={label}
         onChange={setLabel}
         placeholder="Dashboard"
+      />
+      <Input
+        label="Description (optional)"
+        value={description}
+        onChange={setDescription}
+        placeholder="Brief note about this page"
       />
       <label
         style={{
@@ -372,7 +379,13 @@ function UrlForm({ onSave, onCancel, initial }) {
         </Btn>
         <Btn
           onClick={() =>
-            onSave({ url, label: label || url, requiresAuth, loginConfig })
+            onSave({
+              url,
+              label: label || url,
+              description,
+              requiresAuth,
+              loginConfig,
+            })
           }
           disabled={!url}
         >
@@ -1013,6 +1026,91 @@ export default function App() {
     setShowAddUrl(false);
   };
 
+  const importConfig = useCallback((file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const config = JSON.parse(e.target.result);
+        if (!config.urls || !Array.isArray(config.urls)) {
+          setApiError("Invalid config file: missing 'urls' array");
+          return;
+        }
+
+        const auth = config.auth || {};
+        const cleanVal = (v) => (!v || v.startsWith("FILL_IN") ? "" : v);
+        const needsCreds =
+          config.urls.some((u) => u.requiresAuth) &&
+          auth.username &&
+          auth.password;
+
+        const newUrls = config.urls.map((u, i) => ({
+          id: `${Date.now()}-${i}`,
+          url: u.url,
+          label: u.label || u.url,
+          description: u.description || "",
+          requiresAuth: u.requiresAuth || false,
+          loginConfig: u.requiresAuth
+            ? {
+                loginUrl: auth.loginUrl || EMPTY_LOGIN.loginUrl,
+                usernameLabel:
+                  auth.usernameSelector || EMPTY_LOGIN.usernameLabel,
+                usernameValue: cleanVal(auth.username),
+                passwordLabel:
+                  auth.passwordSelector || EMPTY_LOGIN.passwordLabel,
+                passwordValue: cleanVal(auth.password),
+                submitSelector:
+                  auth.submitSelector || EMPTY_LOGIN.submitSelector,
+                extraFields: [],
+              }
+            : { ...EMPTY_LOGIN },
+        }));
+
+        setUrls(newUrls);
+        setScans([]);
+        setSelectedUrls(new Set());
+        setTab("urls");
+      } catch (err) {
+        setApiError(`Failed to parse config file: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const exportConfig = useCallback(() => {
+    const firstAuth = urls.find((u) => u.requiresAuth)?.loginConfig;
+    const config = {
+      name: "WCAG Watcher Scan Config",
+      auth: firstAuth
+        ? {
+            loginUrl: firstAuth.loginUrl,
+            usernameSelector: firstAuth.usernameLabel,
+            passwordSelector: firstAuth.passwordLabel,
+            submitSelector: firstAuth.submitSelector,
+            username: "",
+            password: "",
+          }
+        : undefined,
+      urls: urls.map((u) => ({
+        url: u.url,
+        label: u.label,
+        description: u.description || "",
+        requiresAuth: u.requiresAuth,
+      })),
+    };
+    const json = JSON.stringify(config, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "wcag-watcher-config.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [urls]);
+
+  const fileInputRef = useRef(null);
+
   const updateUrl = (data) => {
     setUrls((prev) =>
       prev.map((u) => (u.id === editingUrl.id ? { ...u, ...data } : u)),
@@ -1292,6 +1390,34 @@ export default function App() {
         </div>
       )}
 
+      {urls.some((u) => u.requiresAuth && !u.loginConfig?.usernameValue) && (
+        <Card
+          style={{
+            padding: 12,
+            marginBottom: 16,
+            background: "#fef3c7",
+            border: "1px solid #f59e0b40",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 13,
+              color: "#92400e",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span>🔑</span>
+            <span>
+              Some URLs require authentication but are missing credentials.
+              Click <strong>Edit</strong> on those URLs to fill in the username
+              and password.
+            </span>
+          </div>
+        </Card>
+      )}
+
       <div
         style={{
           display: "flex",
@@ -1363,9 +1489,39 @@ export default function App() {
               </label>
             )}
             <div style={{ flex: 1 }} />
-            <Btn onClick={() => setShowAddUrl(true)} style={{ fontSize: 13 }}>
-              + Add URL
-            </Btn>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="file"
+                accept=".json"
+                ref={fileInputRef}
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  if (e.target.files[0]) {
+                    importConfig(e.target.files[0]);
+                    e.target.value = "";
+                  }
+                }}
+              />
+              <Btn
+                variant="secondary"
+                onClick={() => fileInputRef.current?.click()}
+                style={{ fontSize: 12 }}
+              >
+                ↑ Import JSON
+              </Btn>
+              {urls.length > 0 && (
+                <Btn
+                  variant="secondary"
+                  onClick={exportConfig}
+                  style={{ fontSize: 12 }}
+                >
+                  ↓ Export JSON
+                </Btn>
+              )}
+              <Btn onClick={() => setShowAddUrl(true)} style={{ fontSize: 13 }}>
+                + Add URL
+              </Btn>
+            </div>
           </div>
 
           {urls.length === 0 ? (
@@ -1381,11 +1537,19 @@ export default function App() {
                   marginBottom: 16,
                 }}
               >
-                Add URLs to begin monitoring for accessibility violations.
+                Add URLs manually or import a JSON config file to get started.
               </div>
-              <Btn onClick={() => setShowAddUrl(true)}>
-                + Add Your First URL
-              </Btn>
+              <div
+                style={{ display: "flex", gap: 8, justifyContent: "center" }}
+              >
+                <Btn
+                  variant="secondary"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  ↑ Import JSON
+                </Btn>
+                <Btn onClick={() => setShowAddUrl(true)}>+ Add URL</Btn>
+              </div>
             </Card>
           ) : (
             urls.map((u) => {
@@ -1426,8 +1590,24 @@ export default function App() {
                         {u.url}
                       </div>
                     )}
+                    {u.description && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--text-secondary, #9ca3af)",
+                          marginTop: 2,
+                        }}
+                      >
+                        {u.description}
+                      </div>
+                    )}
                   </div>
-                  {u.requiresAuth && <Badge label="Auth" color="#7c3aed" />}
+                  {u.requiresAuth && !u.loginConfig?.usernameValue && (
+                    <Badge label="Needs Credentials" color="#f59e0b" />
+                  )}
+                  {u.requiresAuth && u.loginConfig?.usernameValue && (
+                    <Badge label="Auth" color="#7c3aed" />
+                  )}
                   {latest?.error && <Badge label="Error" color="#dc2626" />}
                   {totalV !== null && (
                     <Badge
