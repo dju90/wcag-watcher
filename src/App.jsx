@@ -447,16 +447,7 @@ function ScanResultsView({
   expandedV,
   setExpandedV,
 }) {
-  const [openScreenshots, setOpenScreenshots] = useState(new Set());
   const [resultType, setResultType] = useState("violations");
-
-  const toggleScreenshot = (id) => {
-    setOpenScreenshots((prev) => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  };
 
   const urlsWithResults = useMemo(() => {
     return urls
@@ -725,20 +716,6 @@ function ScanResultsView({
                   >
                     {new Date(u.latest.timestamp).toLocaleString()}
                   </span>
-                  {u.latest.screenshot && (
-                    <Btn
-                      variant="secondary"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleScreenshot(u.id);
-                      }}
-                      style={{ padding: "3px 8px", fontSize: 11 }}
-                    >
-                      {openScreenshots.has(u.id)
-                        ? "Hide Screenshot"
-                        : "Screenshot"}
-                    </Btn>
-                  )}
                   <Badge
                     label={`${u.displayItems.length} ${resultType === "violations" ? "violation" : "needs review"}${u.displayItems.length !== 1 ? "s" : ""}`}
                     color={
@@ -753,36 +730,6 @@ function ScanResultsView({
               )}
             </div>
           </div>
-          {openScreenshots.has(u.id) && u.latest.screenshot && (
-            <div
-              style={{
-                padding: "12px 16px",
-                borderBottom: "1px solid var(--border, #e5e7eb)",
-                background: "var(--bg-secondary, #f8f9fa)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: "var(--text-secondary, #6b7280)",
-                  marginBottom: 8,
-                }}
-              >
-                Page screenshot at time of scan:
-              </div>
-              <img
-                src={`data:image/png;base64,${u.latest.screenshot}`}
-                alt={`Screenshot of ${u.url}`}
-                style={{
-                  maxWidth: "100%",
-                  borderRadius: 6,
-                  border: "1px solid var(--border, #e5e7eb)",
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                }}
-              />
-            </div>
-          )}
           {u.latest.error ? (
             <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
               <strong>Scan failed:</strong> {u.latest.error}
@@ -1175,7 +1122,6 @@ export default function App() {
                   violations,
                   incomplete,
                   passes: result.passes,
-                  screenshot: result.screenshot || null,
                 },
               ]);
               setScanProgress((prev) =>
