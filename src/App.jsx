@@ -416,6 +416,29 @@ function expandUrlEntries(urls) {
   return urls.flatMap(expandUrlEntry);
 }
 
+function normalizeFindingText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function getFindingFingerprint(finding) {
+  const nodeKey = (finding.nodes || [])
+    .map(
+      (node) =>
+        `${normalizeFindingText(node.selector)}|${normalizeFindingText(
+          node.html,
+        )}|${normalizeFindingText(node.failureSummary)}`,
+    )
+    .sort()
+    .join("||");
+  return [
+    finding.ruleId,
+    finding.criterion || "",
+    finding.impact || "",
+    normalizeFindingText(finding.desc),
+    nodeKey,
+  ].join("::");
+}
+
 function UrlForm({ onSave, onCancel, initial }) {
   const [url, setUrl] = useState(initial?.url || "");
   const [label, setLabel] = useState(initial?.label || "");
@@ -630,6 +653,7 @@ function ScanResultsView({
   setExpandedV,
 }) {
   const [resultType, setResultType] = useState("violations");
+  const [scopeFilter, setScopeFilter] = useState("all");
 
   const urlsWithResults = useMemo(() => {
     return expandUrlEntries(urls)
@@ -656,6 +680,33 @@ function ScanResultsView({
     return [...s].sort();
   }, [urlsWithResults, resultType]);
 
+  const occurrenceByFingerprint = useMemo(() => {
+    const occurrences = new Map();
+    urlsWithResults.forEach((u) => {
+      const items =
+        resultType === "violations"
+          ? u.latest.violations
+          : u.latest.incomplete || [];
+      items.forEach((item) => {
+        const fingerprint = getFindingFingerprint(item);
+        if (!occurrences.has(fingerprint)) {
+          occurrences.set(fingerprint, { urlSet: new Set() });
+        }
+        const occurrence = occurrences.get(fingerprint);
+        occurrence.urlSet.add(u.url);
+      });
+    });
+    return new Map(
+      [...occurrences.entries()].map(([fingerprint, occurrence]) => {
+        const occurrenceUrls = [...occurrence.urlSet];
+        return [
+          fingerprint,
+          { count: occurrenceUrls.length, urls: occurrenceUrls },
+        ];
+      }),
+    );
+  }, [urlsWithResults, resultType]);
+
   const filtered = useMemo(() => {
     return urlsWithResults.map((u) => {
       const items =
@@ -665,9 +716,24 @@ function ScanResultsView({
       return {
         ...u,
         displayItems: items
+          .map((v) => {
+            const occurrence =
+              occurrenceByFingerprint.get(getFindingFingerprint(v)) || {};
+            return {
+              ...v,
+              occurrenceCount: occurrence.count || 1,
+              occurrenceUrls: occurrence.urls || [u.url],
+            };
+          })
           .filter((v) => impactFilter === "all" || v.impact === impactFilter)
           .filter(
             (v) => criterionFilter === "all" || v.criterion === criterionFilter,
+          )
+          .filter(
+            (v) =>
+              scopeFilter === "all" ||
+              (scopeFilter === "unique" && v.occurrenceCount === 1) ||
+              (scopeFilter === "recurring" && v.occurrenceCount > 1),
           )
           .sort(
             (a, b) =>
@@ -675,7 +741,14 @@ function ScanResultsView({
           ),
       };
     });
-  }, [urlsWithResults, impactFilter, criterionFilter, resultType]);
+  }, [
+    urlsWithResults,
+    impactFilter,
+    criterionFilter,
+    resultType,
+    scopeFilter,
+    occurrenceByFingerprint,
+  ]);
 
   const totalViolations = urlsWithResults.reduce(
     (s, u) => s + u.latest.violations.length,
@@ -687,12 +760,22 @@ function ScanResultsView({
   );
 
   const unfilteredItems = useMemo(() => {
-    return urlsWithResults.flatMap((u) =>
-      resultType === "violations"
-        ? u.latest.violations
-        : u.latest.incomplete || [],
-    );
-  }, [urlsWithResults, resultType]);
+    return urlsWithResults.flatMap((u) => {
+      const items =
+        resultType === "violations"
+          ? u.latest.violations
+          : u.latest.incomplete || [];
+      return items.map((item) => {
+        const occurrence =
+          occurrenceByFingerprint.get(getFindingFingerprint(item)) || {};
+        return {
+          ...item,
+          occurrenceCount: occurrence.count || 1,
+          occurrenceUrls: occurrence.urls || [u.url],
+        };
+      });
+    });
+  }, [urlsWithResults, resultType, occurrenceByFingerprint]);
 
   if (urlsWithResults.length === 0) {
     return (
@@ -808,6 +891,49 @@ function ScanResultsView({
               color: "var(--text-secondary, #6b7280)",
             }}
           >
+            Scope:
+          </span>
+          {[
+            { key: "all", label: "All" },
+            { key: "unique", label: "Unique" },
+            { key: "recurring", label: "Recurring" },
+          ].map((scope) => {
+            const scopedItems = unfilteredItems
+              .filter(
+                (v) => impactFilter === "all" || v.impact === impactFilter,
+              )
+              .filter(
+                (v) =>
+                  criterionFilter === "all" || v.criterion === criterionFilter,
+              );
+            const count =
+              scope.key === "all"
+                ? scopedItems.length
+                : scopedItems.filter((v) =>
+                    scope.key === "unique"
+                      ? v.occurrenceCount === 1
+                      : v.occurrenceCount > 1,
+                  ).length;
+            return (
+              <Btn
+                key={scope.key}
+                variant={scopeFilter === scope.key ? "primary" : "secondary"}
+                onClick={() => setScopeFilter(scope.key)}
+                style={{ padding: "4px 10px", fontSize: 12 }}
+              >
+                {scope.label} ({count})
+              </Btn>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--text-secondary, #6b7280)",
+            }}
+          >
             WCAG:
           </span>
           <select
@@ -910,7 +1036,9 @@ function ScanResultsView({
                 ? "violations"
                 : "potential issues"}{" "}
               found
-              {impactFilter !== "all" || criterionFilter !== "all"
+              {impactFilter !== "all" ||
+              criterionFilter !== "all" ||
+              scopeFilter !== "all"
                 ? " matching filters"
                 : ""}{" "}
               ✓
@@ -952,6 +1080,12 @@ function ScanResultsView({
                     </span>
                     {v.criterion && v.criterion !== "—" && (
                       <Badge label={`WCAG ${v.criterion}`} color="#2563eb" />
+                    )}
+                    {v.occurrenceCount > 1 && (
+                      <Badge
+                        label={`Appears on ${v.occurrenceCount} pages`}
+                        color="#7c3aed"
+                      />
                     )}
                     <span
                       style={{
