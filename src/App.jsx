@@ -436,7 +436,7 @@ function exportCSV(urls, scans) {
       }
     };
     addRows(latest.violations, "Violation");
-    addRows(latest.incomplete || [], "Needs Review");
+    addRows(latest.incomplete || [], "Potential Issue");
   }
   const csv = rows.map((r) => r.join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -587,7 +587,7 @@ function ScanResultsView({
               fontWeight: 600,
             }}
           >
-            NEEDS REVIEW
+            POTENTIAL ISSUES
           </div>
         </Card>
       </div>
@@ -710,7 +710,7 @@ function ScanResultsView({
                     {new Date(u.latest.timestamp).toLocaleString()}
                   </span>
                   <Badge
-                    label={`${u.displayItems.length} ${resultType === "violations" ? "violation" : "needs review"}${u.displayItems.length !== 1 ? "s" : ""}`}
+                    label={`${u.displayItems.length} ${resultType === "violations" ? "violation" : "potential issue"}${u.displayItems.length !== 1 ? "s" : ""}`}
                     color={
                       u.displayItems.length > 0
                         ? resultType === "violations"
@@ -739,7 +739,7 @@ function ScanResultsView({
               No{" "}
               {resultType === "violations"
                 ? "violations"
-                : "needs review items"}{" "}
+                : "potential issues"}{" "}
               found
               {impactFilter !== "all" || criterionFilter !== "all"
                 ? " matching filters"
@@ -970,7 +970,7 @@ function ScanProgress({ progress }) {
                 />
                 {p.incompleteCount > 0 && (
                   <Badge
-                    label={`${p.incompleteCount} needs review`}
+                    label={`${p.incompleteCount} potential issue${p.incompleteCount !== 1 ? "s" : ""}`}
                     color="#ca8a04"
                   />
                 )}
