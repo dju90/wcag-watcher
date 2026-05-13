@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 
-const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
+const DEFAULT_API_URL = "http://localhost:3001";
 
 const IMPACT_ORDER = { critical: 0, serious: 1, moderate: 2, minor: 3 };
 const IMPACT_COLORS = {
@@ -17,6 +17,14 @@ function extractCriterion(tags) {
     if (m) return `${m[1]}.${m[2]}.${m[3]}`;
   }
   return "—";
+}
+
+// HtmlCS codes look like "WCAG2AA.Principle1.Guideline1_1.1_1_1.H37" — the
+// success criterion is encoded as `N_N_N` between dotted segments.
+function extractHtmlcsCriterion(code) {
+  if (!code) return "—";
+  const m = code.match(/\.(\d+)_(\d+)_(\d+)\./);
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : "—";
 }
 
 function Badge({ label, color }) {
@@ -450,6 +458,79 @@ function exportCSV(urls, scans) {
   URL.revokeObjectURL(url);
 }
 
+// Small helper components reused across view modes
+function ElementCard({ selector, html, note }) {
+  return (
+    <div
+      style={{
+        background: "var(--bg-secondary, #f3f4f6)",
+        borderRadius: 8,
+        padding: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+    >
+      {selector && (
+        <div
+          style={{ fontFamily: "monospace", fontSize: 12, color: "#2563eb" }}
+        >
+          {selector}
+        </div>
+      )}
+      {html && (
+        <pre
+          style={{
+            margin: 0,
+            fontFamily: "monospace",
+            fontSize: 11,
+            color: "#dc2626",
+            background: "#fef2f2",
+            padding: "6px 8px",
+            borderRadius: 4,
+            overflowX: "auto",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {html}
+        </pre>
+      )}
+      {note && (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-secondary, #4b5563)",
+            marginTop: 4,
+          }}
+        >
+          {note}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EngineFindings({ label, color, children }) {
+  return (
+    <div
+      style={{
+        borderLeft: `3px solid ${color}`,
+        paddingLeft: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: 0.5 }}>
+        {label.toUpperCase()}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+const ENGINE_COLORS = { axe: "#dc2626", htmlcs: "#7c3aed", ace: "#0891b2" };
+
 function ScanResultsView({
   urls,
   scans,
@@ -461,6 +542,9 @@ function ScanResultsView({
   setExpandedV,
 }) {
   const [resultType, setResultType] = useState("violations");
+  const [htmlcsTypeFilter, setHtmlcsTypeFilter] = useState("all");
+  const [aceLevelFilter, setAceLevelFilter] = useState("all");
+  const [xeBucketFilter, setXeBucketFilter] = useState("all");
 
   const urlsWithResults = useMemo(() => {
     return urls
@@ -473,12 +557,39 @@ function ScanResultsView({
       .filter((u) => u.latest);
   }, [urls, scans]);
 
-  const allCriteria = useMemo(() => {
+  // Engine-totals used as the mode-switcher card numbers.
+  const totals = useMemo(() => {
+    const t = {
+      violations: 0,
+      incomplete: 0,
+      htmlcs: 0,
+      ace: 0,
+      corroborated: 0,
+    };
+    for (const u of urlsWithResults) {
+      const l = u.latest;
+      if (!l || l.error) continue;
+      t.violations += (l.violations || []).length;
+      t.incomplete += (l.incomplete || []).length;
+      t.htmlcs += (l.htmlcs || []).filter(
+        (i) => i.type === "error" || i.type === "warning",
+      ).length;
+      t.ace += (l.ace || []).filter(
+        (i) =>
+          i.level === "violation" || i.level === "potentialviolation",
+      ).length;
+      t.corroborated += (l.reconciled?.corroborated || []).length;
+    }
+    return t;
+  }, [urlsWithResults]);
+
+  // WCAG criterion dropdown options — only populated in axe modes.
+  const axeCriteria = useMemo(() => {
     const s = new Set();
     urlsWithResults.forEach((u) => {
       const items =
         resultType === "violations"
-          ? u.latest.violations
+          ? u.latest.violations || []
           : u.latest.incomplete || [];
       items.forEach((v) => {
         if (v.criterion && v.criterion !== "—") s.add(v.criterion);
@@ -487,47 +598,88 @@ function ScanResultsView({
     return [...s].sort();
   }, [urlsWithResults, resultType]);
 
+  // Items to render per URL — shape varies by mode.
   const filtered = useMemo(() => {
     return urlsWithResults.map((u) => {
-      const items =
-        resultType === "violations"
-          ? u.latest.violations
-          : u.latest.incomplete || [];
-      return {
-        ...u,
-        displayItems: items
-          .filter((v) => impactFilter === "all" || v.impact === impactFilter)
+      const l = u.latest;
+      if (!l || l.error) return { ...u, items: [] };
+      let items = [];
+      if (resultType === "violations" || resultType === "incomplete") {
+        const source =
+          resultType === "violations"
+            ? l.violations || []
+            : l.incomplete || [];
+        items = source
           .filter(
-            (v) => criterionFilter === "all" || v.criterion === criterionFilter,
+            (v) => impactFilter === "all" || v.impact === impactFilter,
+          )
+          .filter(
+            (v) =>
+              criterionFilter === "all" || v.criterion === criterionFilter,
           )
           .sort(
             (a, b) =>
               (IMPACT_ORDER[a.impact] ?? 4) - (IMPACT_ORDER[b.impact] ?? 4),
-          ),
-      };
+          );
+      } else if (resultType === "htmlcs") {
+        items = (l.htmlcs || [])
+          .filter((i) => i.type === "error" || i.type === "warning")
+          .filter(
+            (i) => htmlcsTypeFilter === "all" || i.type === htmlcsTypeFilter,
+          );
+      } else if (resultType === "ace") {
+        items = (l.ace || [])
+          .filter(
+            (i) =>
+              i.level === "violation" || i.level === "potentialviolation",
+          )
+          .filter(
+            (i) => aceLevelFilter === "all" || i.level === aceLevelFilter,
+          );
+      } else if (resultType === "crossEngine") {
+        const r = l.reconciled || {
+          corroborated: [],
+          axeOnly: [],
+          htmlcsOnly: [],
+          aceOnly: [],
+        };
+        const all = [
+          ...r.corroborated.map((e) => ({ ...e, _bucket: "corroborated" })),
+          ...r.axeOnly.map((e) => ({ ...e, _bucket: "axeOnly" })),
+          ...r.htmlcsOnly.map((e) => ({ ...e, _bucket: "htmlcsOnly" })),
+          ...r.aceOnly.map((e) => ({ ...e, _bucket: "aceOnly" })),
+        ];
+        const picked =
+          xeBucketFilter === "all"
+            ? all
+            : all.filter((e) => e._bucket === xeBucketFilter);
+        items = picked
+          .map((e, i) => ({ ...e, id: `xe-${e._bucket}-${i}` }))
+          .sort((a, b) => b.engines.length - a.engines.length);
+      }
+      return { ...u, items };
     });
-  }, [urlsWithResults, impactFilter, criterionFilter, resultType]);
+  }, [
+    urlsWithResults,
+    resultType,
+    impactFilter,
+    criterionFilter,
+    htmlcsTypeFilter,
+    aceLevelFilter,
+    xeBucketFilter,
+  ]);
 
-  const totalN = filtered.reduce(
-    (s, u) => s + u.displayItems.reduce((ns, v) => ns + v.nodes.length, 0),
-    0,
-  );
-  const totalViolations = urlsWithResults.reduce(
-    (s, u) => s + u.latest.violations.length,
-    0,
-  );
-  const totalIncomplete = urlsWithResults.reduce(
-    (s, u) => s + (u.latest.incomplete || []).length,
-    0,
-  );
-
-  const unfilteredItems = useMemo(() => {
-    return urlsWithResults.flatMap((u) =>
-      resultType === "violations"
-        ? u.latest.violations
-        : u.latest.incomplete || [],
-    );
-  }, [urlsWithResults, resultType]);
+  // Bottom-bar element/finding count.
+  const grandCount = useMemo(() => {
+    if (resultType === "violations" || resultType === "incomplete") {
+      return filtered.reduce(
+        (s, u) =>
+          s + u.items.reduce((ns, v) => ns + (v.nodes?.length || 0), 0),
+        0,
+      );
+    }
+    return filtered.reduce((s, u) => s + u.items.length, 0);
+  }, [filtered, resultType]);
 
   if (urlsWithResults.length === 0) {
     return (
@@ -543,22 +695,84 @@ function ScanResultsView({
     );
   }
 
+  const modeCard = (key, count, label, color) => (
+    <Card
+      style={{
+        flex: 1,
+        padding: 12,
+        textAlign: "center",
+        minWidth: 110,
+        cursor: "pointer",
+        outline: resultType === key ? `2px solid ${color}` : "none",
+      }}
+      onClick={() => setResultType(key)}
+    >
+      <div style={{ fontSize: 24, fontWeight: 700, color }}>{count}</div>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--text-secondary, #6b7280)",
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </div>
+    </Card>
+  );
+
+  const filterPillRow = (label, options, value, onChange) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: "var(--text-secondary, #6b7280)",
+        }}
+      >
+        {label}:
+      </span>
+      {options.map((opt) => (
+        <Btn
+          key={opt.v}
+          variant={value === opt.v ? "primary" : "secondary"}
+          onClick={() => onChange(opt.v)}
+          style={{ padding: "4px 10px", fontSize: 12 }}
+        >
+          {opt.label}
+        </Btn>
+      ))}
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Mode-switcher stat cards */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        {modeCard("violations", totals.violations, "AXE VIOLATIONS", "#dc2626")}
+        {modeCard(
+          "incomplete",
+          totals.incomplete,
+          "AXE NEEDS REVIEW",
+          "#ca8a04",
+        )}
+        {modeCard(
+          "crossEngine",
+          totals.corroborated,
+          "CORROBORATED",
+          "#16a34a",
+        )}
+        {modeCard("htmlcs", totals.htmlcs, "HTMLCS", "#7c3aed")}
+        {modeCard("ace", totals.ace, "IBM ACE", "#0891b2")}
         <Card
           style={{
             flex: 1,
             padding: 12,
             textAlign: "center",
             minWidth: 100,
-            cursor: "pointer",
-            outline: resultType === "violations" ? "2px solid #dc2626" : "none",
           }}
-          onClick={() => setResultType("violations")}
         >
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#dc2626" }}>
-            {totalViolations}
+          <div style={{ fontSize: 24, fontWeight: 700, color: "#000000" }}>
+            {grandCount}
           </div>
           <div
             style={{
@@ -567,51 +781,14 @@ function ScanResultsView({
               fontWeight: 600,
             }}
           >
-            VIOLATIONS
-          </div>
-        </Card>
-        <Card
-          style={{
-            flex: 1,
-            padding: 12,
-            textAlign: "center",
-            minWidth: 100,
-            cursor: "pointer",
-            outline: resultType === "incomplete" ? "2px solid #ca8a04" : "none",
-          }}
-          onClick={() => setResultType("incomplete")}
-        >
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#ca8a04" }}>
-            {totalIncomplete}
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--text-secondary, #6b7280)",
-              fontWeight: 600,
-            }}
-          >
-            NEEDS REVIEW
-          </div>
-        </Card>
-        <Card
-          style={{ flex: 1, padding: 12, textAlign: "center", minWidth: 100 }}
-        >
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#000000" }}>
-            {totalN}
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--text-secondary, #6b7280)",
-              fontWeight: 600,
-            }}
-          >
-            ELEMENTS
+            {resultType === "violations" || resultType === "incomplete"
+              ? "ELEMENTS"
+              : "FINDINGS"}
           </div>
         </Card>
       </div>
 
+      {/* Filter row varies by mode */}
       <div
         style={{
           display: "flex",
@@ -620,77 +797,95 @@ function ScanResultsView({
           flexWrap: "wrap",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--text-secondary, #6b7280)",
-            }}
-          >
-            Severity:
-          </span>
-          {["all", "critical", "serious", "moderate", "minor"].map((f) => {
-            const count =
-              f === "all"
-                ? unfilteredItems.length
-                : unfilteredItems.filter((v) => v.impact === f).length;
-            const label =
-              f === "all"
-                ? `All (${count})`
-                : `${f.charAt(0).toUpperCase() + f.slice(1)} (${count})`;
-            return (
-              <Btn
-                key={f}
-                variant={impactFilter === f ? "primary" : "secondary"}
-                onClick={() => setImpactFilter(f)}
-                style={{ padding: "4px 10px", fontSize: 12 }}
+        {(resultType === "violations" || resultType === "incomplete") && (
+          <>
+            {filterPillRow(
+              "Severity",
+              ["all", "critical", "serious", "moderate", "minor"].map((v) => ({
+                v,
+                label: v === "all" ? "All" : v.charAt(0).toUpperCase() + v.slice(1),
+              })),
+              impactFilter,
+              setImpactFilter,
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--text-secondary, #6b7280)",
+                }}
               >
-                {label}
-              </Btn>
-            );
-          })}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--text-secondary, #6b7280)",
-            }}
-          >
-            WCAG:
-          </span>
-          <select
-            value={criterionFilter}
-            onChange={(e) => setCriterionFilter(e.target.value)}
-            style={{
-              padding: "5px 8px",
-              borderRadius: 8,
-              border: "1px solid var(--border, #e5e7eb)",
-              fontSize: 12,
-              background: "var(--card, #fff)",
-              color: "var(--text, #1f2937)",
-            }}
-          >
-            <option value="all">All Criteria</option>
-            {allCriteria.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </div>
+                WCAG:
+              </span>
+              <select
+                value={criterionFilter}
+                onChange={(e) => setCriterionFilter(e.target.value)}
+                style={{
+                  padding: "5px 8px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border, #e5e7eb)",
+                  fontSize: 12,
+                  background: "var(--card, #fff)",
+                  color: "var(--text, #1f2937)",
+                }}
+              >
+                <option value="all">All Criteria</option>
+                {axeCriteria.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
+        {resultType === "htmlcs" &&
+          filterPillRow(
+            "Type",
+            [
+              { v: "all", label: "All" },
+              { v: "error", label: "Error" },
+              { v: "warning", label: "Warning" },
+            ],
+            htmlcsTypeFilter,
+            setHtmlcsTypeFilter,
+          )}
+        {resultType === "ace" &&
+          filterPillRow(
+            "Level",
+            [
+              { v: "all", label: "All" },
+              { v: "violation", label: "Violation" },
+              { v: "potentialviolation", label: "Potential" },
+            ],
+            aceLevelFilter,
+            setAceLevelFilter,
+          )}
+        {resultType === "crossEngine" &&
+          filterPillRow(
+            "Bucket",
+            [
+              { v: "all", label: "All" },
+              { v: "corroborated", label: "Corroborated" },
+              { v: "axeOnly", label: "axe only" },
+              { v: "htmlcsOnly", label: "HtmlCS only" },
+              { v: "aceOnly", label: "ace only" },
+            ],
+            xeBucketFilter,
+            setXeBucketFilter,
+          )}
         <div style={{ flex: 1 }} />
         <Btn
           variant="secondary"
           onClick={() => exportCSV(urls, scans)}
           style={{ fontSize: 12 }}
         >
-          ↓ Export CSV
+          ↓ Export CSV (axe)
         </Btn>
       </div>
 
+      {/* Per-URL result cards */}
       {filtered.map((u) => (
         <Card key={u.id} style={{ padding: 0, overflow: "hidden" }}>
           <div
@@ -730,24 +925,21 @@ function ScanResultsView({
                     {new Date(u.latest.timestamp).toLocaleString()}
                   </span>
                   <Badge
-                    label={`${u.displayItems.length} ${resultType === "violations" ? "violation" : "needs review"}${u.displayItems.length !== 1 ? "s" : ""}`}
-                    color={
-                      u.displayItems.length > 0
-                        ? resultType === "violations"
-                          ? "#dc2626"
-                          : "#ca8a04"
-                        : "#16a34a"
-                    }
+                    label={`${u.items.length} ${
+                      u.items.length === 1 ? "finding" : "findings"
+                    }`}
+                    color={u.items.length > 0 ? "#dc2626" : "#16a34a"}
                   />
                 </>
               )}
             </div>
           </div>
+
           {u.latest.error ? (
             <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
               <strong>Scan failed:</strong> {u.latest.error}
             </div>
-          ) : u.displayItems.length === 0 ? (
+          ) : u.items.length === 0 ? (
             <div
               style={{
                 padding: 20,
@@ -756,24 +948,18 @@ function ScanResultsView({
                 fontSize: 14,
               }}
             >
-              No{" "}
-              {resultType === "violations"
-                ? "violations"
-                : "needs review items"}{" "}
-              found
-              {impactFilter !== "all" || criterionFilter !== "all"
-                ? " matching filters"
-                : ""}{" "}
-              ✓
+              No findings in this view ✓
             </div>
-          ) : (
-            u.displayItems.map((v) => {
+          ) : resultType === "violations" || resultType === "incomplete" ? (
+            u.items.map((v) => {
               const key = `${u.id}-${v.id}`;
               const isExp = expandedV === key;
               return (
                 <div
                   key={v.id}
-                  style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
+                  style={{
+                    borderBottom: "1px solid var(--border, #e5e7eb)",
+                  }}
                 >
                   <div
                     onClick={() => setExpandedV(isExp ? null : key)}
@@ -810,7 +996,8 @@ function ScanResultsView({
                         color: "var(--text-secondary, #6b7280)",
                       }}
                     >
-                      {v.nodes.length} element{v.nodes.length !== 1 ? "s" : ""}
+                      {v.nodes.length} element
+                      {v.nodes.length !== 1 ? "s" : ""}
                     </span>
                   </div>
                   {isExp && (
@@ -851,54 +1038,304 @@ function ScanResultsView({
                         Affected Elements:
                       </div>
                       {v.nodes.map((n, ni) => (
-                        <div
+                        <ElementCard
                           key={ni}
-                          style={{
-                            background: "var(--bg-secondary, #f3f4f6)",
-                            borderRadius: 8,
-                            padding: 10,
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 4,
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontFamily: "monospace",
-                              fontSize: 12,
-                              color: "#2563eb",
-                            }}
-                          >
-                            {n.selector}
-                          </div>
-                          <pre
-                            style={{
-                              margin: 0,
-                              fontFamily: "monospace",
-                              fontSize: 11,
-                              color: "#dc2626",
-                              background: "#fef2f2",
-                              padding: "6px 8px",
-                              borderRadius: 4,
-                              overflowX: "auto",
-                              whiteSpace: "pre-wrap",
-                            }}
-                          >
-                            {n.html}
-                          </pre>
-                          {n.failureSummary && (
+                          selector={n.selector}
+                          html={n.html}
+                          note={n.failureSummary}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          ) : resultType === "htmlcs" ? (
+            u.items.map((i) => {
+              const key = `${u.id}-${i.id}`;
+              const isExp = expandedV === key;
+              return (
+                <div
+                  key={i.id}
+                  style={{
+                    borderBottom: "1px solid var(--border, #e5e7eb)",
+                  }}
+                >
+                  <div
+                    onClick={() => setExpandedV(isExp ? null : key)}
+                    style={{
+                      padding: "10px 16px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      background: isExp
+                        ? "var(--bg-secondary, #fafafa)"
+                        : "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        transform: isExp ? "rotate(90deg)" : "none",
+                        transition: "transform 0.15s",
+                      }}
+                    >
+                      ▶
+                    </span>
+                    <Badge
+                      label={i.type}
+                      color={i.type === "error" ? "#dc2626" : "#ca8a04"}
+                    />
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontFamily: "monospace",
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {i.code}
+                    </span>
+                    {i.criterion && i.criterion !== "—" && (
+                      <Badge label={`WCAG ${i.criterion}`} color="#2563eb" />
+                    )}
+                  </div>
+                  {isExp && (
+                    <div
+                      style={{
+                        padding: "0 16px 12px 44px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-secondary, #4b5563)",
+                        }}
+                      >
+                        {i.msg}
+                      </div>
+                      <ElementCard selector={i.selector} html={i.html} />
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          ) : resultType === "ace" ? (
+            u.items.map((i) => {
+              const key = `${u.id}-${i.id}`;
+              const isExp = expandedV === key;
+              const lvlColor =
+                i.level === "violation" ? "#dc2626" : "#ca8a04";
+              return (
+                <div
+                  key={i.id}
+                  style={{
+                    borderBottom: "1px solid var(--border, #e5e7eb)",
+                  }}
+                >
+                  <div
+                    onClick={() => setExpandedV(isExp ? null : key)}
+                    style={{
+                      padding: "10px 16px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      background: isExp
+                        ? "var(--bg-secondary, #fafafa)"
+                        : "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        transform: isExp ? "rotate(90deg)" : "none",
+                        transition: "transform 0.15s",
+                      }}
+                    >
+                      ▶
+                    </span>
+                    <Badge
+                      label={
+                        i.level === "violation" ? "violation" : "potential"
+                      }
+                      color={lvlColor}
+                    />
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {i.ruleId}
+                    </span>
+                  </div>
+                  {isExp && (
+                    <div
+                      style={{
+                        padding: "0 16px 12px 44px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-secondary, #4b5563)",
+                        }}
+                      >
+                        {i.message}
+                      </div>
+                      <ElementCard
+                        selector={i.xpath}
+                        html={i.html || i.snippet}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          ) : (
+            // Cross-engine: per element
+            u.items.map((e) => {
+              const key = `${u.id}-${e.id}`;
+              const isExp = expandedV === key;
+              const cnt = e.engines.length;
+              const cntColor =
+                cnt === 3 ? "#16a34a" : cnt === 2 ? "#0891b2" : "#6b7280";
+              return (
+                <div
+                  key={e.id}
+                  style={{
+                    borderBottom: "1px solid var(--border, #e5e7eb)",
+                  }}
+                >
+                  <div
+                    onClick={() => setExpandedV(isExp ? null : key)}
+                    style={{
+                      padding: "10px 16px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      background: isExp
+                        ? "var(--bg-secondary, #fafafa)"
+                        : "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        transform: isExp ? "rotate(90deg)" : "none",
+                        transition: "transform 0.15s",
+                      }}
+                    >
+                      ▶
+                    </span>
+                    <Badge label={`${cnt}/3 engines`} color={cntColor} />
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontFamily: "monospace",
+                        color: "#2563eb",
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {e.selector || "(unresolved selector)"}
+                    </span>
+                    {e.engines.map((eng) => (
+                      <Badge key={eng} label={eng} color={ENGINE_COLORS[eng]} />
+                    ))}
+                  </div>
+                  {isExp && (
+                    <div
+                      style={{
+                        padding: "0 16px 12px 44px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                      }}
+                    >
+                      <ElementCard html={e.html} />
+                      {e.axe.length > 0 && (
+                        <EngineFindings label="axe-core" color="#dc2626">
+                          {e.axe.map((f, i) => (
                             <div
+                              key={i}
                               style={{
                                 fontSize: 12,
-                                color: "var(--text-secondary, #4b5563)",
-                                marginTop: 4,
+                                color: "var(--text, #1f2937)",
                               }}
                             >
-                              {n.failureSummary}
+                              <strong>{f.ruleId}</strong> ({f.impact}) —{" "}
+                              {f.desc}
                             </div>
-                          )}
-                        </div>
-                      ))}
+                          ))}
+                        </EngineFindings>
+                      )}
+                      {e.htmlcs.length > 0 && (
+                        <EngineFindings
+                          label="HTML_CodeSniffer"
+                          color="#7c3aed"
+                        >
+                          {e.htmlcs.map((f, i) => (
+                            <div
+                              key={i}
+                              style={{ fontSize: 12, lineHeight: 1.4 }}
+                            >
+                              <Badge
+                                label={f.type}
+                                color={
+                                  f.type === "error" ? "#dc2626" : "#ca8a04"
+                                }
+                              />{" "}
+                              <code style={{ fontSize: 11 }}>{f.code}</code> —{" "}
+                              {f.msg}
+                            </div>
+                          ))}
+                        </EngineFindings>
+                      )}
+                      {e.ace.length > 0 && (
+                        <EngineFindings
+                          label="IBM Equal Access"
+                          color="#0891b2"
+                        >
+                          {e.ace.map((f, i) => (
+                            <div
+                              key={i}
+                              style={{ fontSize: 12, lineHeight: 1.4 }}
+                            >
+                              <Badge
+                                label={
+                                  f.level === "violation"
+                                    ? "violation"
+                                    : "potential"
+                                }
+                                color={
+                                  f.level === "violation"
+                                    ? "#dc2626"
+                                    : "#ca8a04"
+                                }
+                              />{" "}
+                              <strong>{f.ruleId}</strong> — {f.message}
+                            </div>
+                          ))}
+                        </EngineFindings>
+                      )}
                     </div>
                   )}
                 </div>
@@ -985,13 +1422,25 @@ function ScanProgress({ progress }) {
             {p.status === "done" && (
               <>
                 <Badge
-                  label={`${p.violationCount} violations`}
+                  label={`axe ${p.violationCount}`}
                   color={p.violationCount > 0 ? "#dc2626" : "#16a34a"}
                 />
                 {p.incompleteCount > 0 && (
                   <Badge
-                    label={`${p.incompleteCount} needs review`}
+                    label={`review ${p.incompleteCount}`}
                     color="#ca8a04"
+                  />
+                )}
+                {p.htmlcsCount > 0 && (
+                  <Badge label={`htmlcs ${p.htmlcsCount}`} color="#7c3aed" />
+                )}
+                {p.aceCount > 0 && (
+                  <Badge label={`ace ${p.aceCount}`} color="#0891b2" />
+                )}
+                {p.corroboratedCount > 0 && (
+                  <Badge
+                    label={`✓${p.corroboratedCount} corroborated`}
+                    color="#16a34a"
                   />
                 )}
               </>
@@ -1211,6 +1660,28 @@ export default function App() {
                 id: `${v.ruleId}-inc-${vi}`,
                 criterion: extractCriterion(v.tags),
               }));
+              const htmlcs = (result.htmlcs || []).map((i, ii) => ({
+                ...i,
+                id: `htmlcs-${ii}`,
+                criterion: extractHtmlcsCriterion(i.code),
+              }));
+              const ace = (result.ace || []).map((i, ii) => ({
+                ...i,
+                id: `ace-${ii}`,
+              }));
+              const reconciled = result.reconciled || {
+                corroborated: [],
+                axeOnly: [],
+                htmlcsOnly: [],
+                aceOnly: [],
+              };
+              const htmlcsCount = htmlcs.filter(
+                (i) => i.type === "error" || i.type === "warning",
+              ).length;
+              const aceCount = ace.filter(
+                (i) =>
+                  i.level === "violation" || i.level === "potentialviolation",
+              ).length;
               setScans((prev) => [
                 ...prev,
                 {
@@ -1219,6 +1690,11 @@ export default function App() {
                   timestamp: result.timestamp,
                   violations,
                   incomplete,
+                  htmlcs,
+                  htmlcsError: result.htmlcsError,
+                  ace,
+                  aceError: result.aceError,
+                  reconciled,
                   passes: result.passes,
                 },
               ]);
@@ -1230,6 +1706,9 @@ export default function App() {
                         status: "done",
                         violationCount: result.violations.length,
                         incompleteCount: (result.incomplete || []).length,
+                        htmlcsCount,
+                        aceCount,
+                        corroboratedCount: reconciled.corroborated.length,
                       }
                     : p,
                 ),
