@@ -508,10 +508,6 @@ function ScanResultsView({
     });
   }, [urlsWithResults, impactFilter, criterionFilter, resultType]);
 
-  const totalN = filtered.reduce(
-    (s, u) => s + u.displayItems.reduce((ns, v) => ns + v.nodes.length, 0),
-    0,
-  );
   const totalViolations = urlsWithResults.reduce(
     (s, u) => s + u.latest.violations.length,
     0,
@@ -592,22 +588,6 @@ function ScanResultsView({
             }}
           >
             NEEDS REVIEW
-          </div>
-        </Card>
-        <Card
-          style={{ flex: 1, padding: 12, textAlign: "center", minWidth: 100 }}
-        >
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#000000" }}>
-            {totalN}
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--text-secondary, #6b7280)",
-              fontWeight: 600,
-            }}
-          >
-            ELEMENTS
           </div>
         </Card>
       </div>
