@@ -777,6 +777,280 @@ function ScanResultsView({
     });
   }, [urlsWithResults, resultType, occurrenceByFingerprint]);
 
+  const resultGroups = useMemo(() => {
+    const sourceById = new Map(urls.map((u) => [u.id, u]));
+    const groups = [];
+    const groupById = new Map();
+
+    filtered.forEach((u) => {
+      const source = sourceById.get(u.sourceUrlId) || u;
+      const groupId = source.wildcard?.enabled ? source.id : u.id;
+      if (!groupById.has(groupId)) {
+        const group = {
+          id: groupId,
+          source,
+          isWildcard: Boolean(source.wildcard?.enabled),
+          urls: [],
+        };
+        groupById.set(groupId, group);
+        groups.push(group);
+      }
+      groupById.get(groupId).urls.push(u);
+    });
+
+    return groups;
+  }, [filtered, urls]);
+
+  const renderResultPage = (u, grouped = false) => (
+    <Card
+      key={u.id}
+      style={{
+        padding: 0,
+        overflow: "hidden",
+        ...(grouped
+          ? {
+              borderRadius: 0,
+              borderLeft: "none",
+              borderRight: "none",
+              borderBottom: "none",
+            }
+          : {}),
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 16px",
+          background: "var(--bg-secondary, #f8f9fa)",
+          borderBottom: "1px solid var(--border, #e5e7eb)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{u.label}</div>
+          {u.label !== u.url && (
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--text-secondary, #6b7280)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {u.url}
+            </div>
+          )}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
+          {u.latest.error ? (
+            <Badge label="Scan Error" color="#dc2626" />
+          ) : (
+            <>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-secondary, #9ca3af)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {new Date(u.latest.timestamp).toLocaleString()}
+              </span>
+              <Badge
+                label={`${u.displayItems.length} ${
+                  resultType === "violations" ? "violation" : "potential issue"
+                }${u.displayItems.length !== 1 ? "s" : ""}`}
+                color={
+                  u.displayItems.length > 0
+                    ? resultType === "violations"
+                      ? "#dc2626"
+                      : "#ca8a04"
+                    : "#16a34a"
+                }
+              />
+            </>
+          )}
+        </div>
+      </div>
+      {u.latest.error ? (
+        <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
+          <strong>Scan failed:</strong> {u.latest.error}
+        </div>
+      ) : u.displayItems.length === 0 ? (
+        <div
+          style={{
+            padding: 20,
+            textAlign: "center",
+            color: "var(--text-secondary, #6b7280)",
+            fontSize: 14,
+          }}
+        >
+          No {resultType === "violations" ? "violations" : "potential issues"}{" "}
+          found
+          {impactFilter !== "all" ||
+          criterionFilter !== "all" ||
+          scopeFilter !== "all"
+            ? " matching filters"
+            : ""}{" "}
+          ✓
+        </div>
+      ) : (
+        u.displayItems.map((v) => {
+          const key = `${u.id}-${v.id}`;
+          const isExp = expandedV === key;
+          return (
+            <div
+              key={v.id}
+              style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
+            >
+              <div
+                onClick={() => setExpandedV(isExp ? null : key)}
+                style={{
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  background: isExp
+                    ? "var(--bg-secondary, #fafafa)"
+                    : "transparent",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 12,
+                    transform: isExp ? "rotate(90deg)" : "none",
+                    transition: "transform 0.15s",
+                  }}
+                >
+                  ▶
+                </span>
+                <ImpactBadge impact={v.impact} />
+                <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>
+                  {v.ruleId}
+                </span>
+                {v.criterion && v.criterion !== "—" && (
+                  <Badge label={`WCAG ${v.criterion}`} color="#2563eb" />
+                )}
+                {v.occurrenceCount > 1 && (
+                  <Badge
+                    label={`Appears on ${v.occurrenceCount} pages`}
+                    color="#7c3aed"
+                  />
+                )}
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--text-secondary, #6b7280)",
+                  }}
+                >
+                  {v.nodes.length} element{v.nodes.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              {isExp && (
+                <div
+                  style={{
+                    padding: "0 16px 12px 44px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: "var(--text-secondary, #4b5563)",
+                    }}
+                  >
+                    {v.desc}
+                  </div>
+                  {v.help && (
+                    <a
+                      href={v.help}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: 12, color: "#2563eb" }}
+                    >
+                      How to fix →
+                    </a>
+                  )}
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--text-secondary, #6b7280)",
+                      marginTop: 4,
+                    }}
+                  >
+                    Affected Elements:
+                  </div>
+                  {v.nodes.map((n, ni) => (
+                    <div
+                      key={ni}
+                      style={{
+                        background: "var(--bg-secondary, #f3f4f6)",
+                        borderRadius: 8,
+                        padding: 10,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontFamily: "monospace",
+                          fontSize: 12,
+                          color: "#2563eb",
+                        }}
+                      >
+                        {n.selector}
+                      </div>
+                      <pre
+                        style={{
+                          margin: 0,
+                          fontFamily: "monospace",
+                          fontSize: 11,
+                          color: "#dc2626",
+                          background: "#fef2f2",
+                          padding: "6px 8px",
+                          borderRadius: 4,
+                          overflowX: "auto",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {n.html}
+                      </pre>
+                      {n.failureSummary && (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "var(--text-secondary, #4b5563)",
+                            marginTop: 4,
+                          }}
+                        >
+                          {n.failureSummary}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+    </Card>
+  );
+
   if (urlsWithResults.length === 0) {
     return (
       <Card
@@ -966,230 +1240,83 @@ function ScanResultsView({
         </Btn>
       </div>
 
-      {filtered.map((u) => (
-        <Card key={u.id} style={{ padding: 0, overflow: "hidden" }}>
+      {resultGroups.map((group) => {
+        if (!group.isWildcard) return renderResultPage(group.urls[0]);
+
+        const totalDisplayItems = group.urls.reduce(
+          (sum, u) => sum + u.displayItems.length,
+          0,
+        );
+        const errorCount = group.urls.filter((u) => u.latest.error).length;
+
+        return (
           <div
+            key={group.id}
             style={{
-              padding: "12px 16px",
-              background: "var(--bg-secondary, #f8f9fa)",
-              borderBottom: "1px solid var(--border, #e5e7eb)",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
+              border: "1px solid var(--border, #e5e7eb)",
+              borderRadius: 10,
+              overflow: "hidden",
+              background: "var(--card, #fff)",
             }}
           >
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{u.label}</div>
-              {u.label !== u.url && (
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "var(--bg-secondary, #eef2ff)",
+                borderBottom: "1px solid var(--border, #e5e7eb)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>
+                  {group.source.label}
+                </div>
                 <div
                   style={{
                     fontSize: 12,
                     color: "var(--text-secondary, #6b7280)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {u.url}
+                  {group.source.url}
                 </div>
-              )}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexShrink: 0,
+                  flexWrap: "wrap",
+                  justifyContent: "flex-end",
+                }}
+              >
+                <Badge label={`${group.urls.length} pages`} color="#2563eb" />
+                <Badge
+                  label={`${totalDisplayItems} ${
+                    resultType === "violations"
+                      ? "violations"
+                      : "potential issues"
+                  }`}
+                  color={totalDisplayItems > 0 ? "#dc2626" : "#16a34a"}
+                />
+                {errorCount > 0 && (
+                  <Badge label={`${errorCount} errors`} color="#dc2626" />
+                )}
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {u.latest.error ? (
-                <Badge label="Scan Error" color="#dc2626" />
-              ) : (
-                <>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: "var(--text-secondary, #9ca3af)",
-                    }}
-                  >
-                    {new Date(u.latest.timestamp).toLocaleString()}
-                  </span>
-                  <Badge
-                    label={`${u.displayItems.length} ${resultType === "violations" ? "violation" : "potential issue"}${u.displayItems.length !== 1 ? "s" : ""}`}
-                    color={
-                      u.displayItems.length > 0
-                        ? resultType === "violations"
-                          ? "#dc2626"
-                          : "#ca8a04"
-                        : "#16a34a"
-                    }
-                  />
-                </>
-              )}
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {group.urls.map((u) => renderResultPage(u, true))}
             </div>
           </div>
-          {u.latest.error ? (
-            <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
-              <strong>Scan failed:</strong> {u.latest.error}
-            </div>
-          ) : u.displayItems.length === 0 ? (
-            <div
-              style={{
-                padding: 20,
-                textAlign: "center",
-                color: "var(--text-secondary, #6b7280)",
-                fontSize: 14,
-              }}
-            >
-              No{" "}
-              {resultType === "violations"
-                ? "violations"
-                : "potential issues"}{" "}
-              found
-              {impactFilter !== "all" ||
-              criterionFilter !== "all" ||
-              scopeFilter !== "all"
-                ? " matching filters"
-                : ""}{" "}
-              ✓
-            </div>
-          ) : (
-            u.displayItems.map((v) => {
-              const key = `${u.id}-${v.id}`;
-              const isExp = expandedV === key;
-              return (
-                <div
-                  key={v.id}
-                  style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
-                >
-                  <div
-                    onClick={() => setExpandedV(isExp ? null : key)}
-                    style={{
-                      padding: "10px 16px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      background: isExp
-                        ? "var(--bg-secondary, #fafafa)"
-                        : "transparent",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 12,
-                        transform: isExp ? "rotate(90deg)" : "none",
-                        transition: "transform 0.15s",
-                      }}
-                    >
-                      ▶
-                    </span>
-                    <ImpactBadge impact={v.impact} />
-                    <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>
-                      {v.ruleId}
-                    </span>
-                    {v.criterion && v.criterion !== "—" && (
-                      <Badge label={`WCAG ${v.criterion}`} color="#2563eb" />
-                    )}
-                    {v.occurrenceCount > 1 && (
-                      <Badge
-                        label={`Appears on ${v.occurrenceCount} pages`}
-                        color="#7c3aed"
-                      />
-                    )}
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "var(--text-secondary, #6b7280)",
-                      }}
-                    >
-                      {v.nodes.length} element{v.nodes.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  {isExp && (
-                    <div
-                      style={{
-                        padding: "0 16px 12px 44px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 10,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-secondary, #4b5563)",
-                        }}
-                      >
-                        {v.desc}
-                      </div>
-                      {v.help && (
-                        <a
-                          href={v.help}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ fontSize: 12, color: "#2563eb" }}
-                        >
-                          How to fix →
-                        </a>
-                      )}
-                      <div
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: "var(--text-secondary, #6b7280)",
-                          marginTop: 4,
-                        }}
-                      >
-                        Affected Elements:
-                      </div>
-                      {v.nodes.map((n, ni) => (
-                        <div
-                          key={ni}
-                          style={{
-                            background: "var(--bg-secondary, #f3f4f6)",
-                            borderRadius: 8,
-                            padding: 10,
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 4,
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontFamily: "monospace",
-                              fontSize: 12,
-                              color: "#2563eb",
-                            }}
-                          >
-                            {n.selector}
-                          </div>
-                          <pre
-                            style={{
-                              margin: 0,
-                              fontFamily: "monospace",
-                              fontSize: 11,
-                              color: "#dc2626",
-                              background: "#fef2f2",
-                              padding: "6px 8px",
-                              borderRadius: 4,
-                              overflowX: "auto",
-                              whiteSpace: "pre-wrap",
-                            }}
-                          >
-                            {n.html}
-                          </pre>
-                          {n.failureSummary && (
-                            <div
-                              style={{
-                                fontSize: 12,
-                                color: "var(--text-secondary, #4b5563)",
-                                marginTop: 4,
-                              }}
-                            >
-                              {n.failureSummary}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </Card>
-      ))}
+        );
+      })}
+
     </div>
   );
 }
