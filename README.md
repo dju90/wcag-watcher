@@ -63,6 +63,9 @@ The scanner configuration includes:
   API Settings in the app header.
 - **WCAG level**: Choose the level in the scan header before running a scan.
   The default is WCAG 2.1 AA.
+- **Wildcard URL ranges**: Add `*` to a URL, enable wildcard expansion, and
+  define the numeric range to scan pages such as `/levels/1` through
+  `/levels/13`.
 
 ## Notes
 

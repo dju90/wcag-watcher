@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useRef } from "react";
 
 const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
 const DEFAULT_WCAG_LEVEL = "wcag21aa";
+const URL_WILDCARD_TOKEN = "*";
 const WCAG_LEVEL_OPTIONS = [
   { value: "wcag2a", label: "WCAG 2.0 A" },
   { value: "wcag2aa", label: "WCAG 2.0 AA" },
@@ -375,24 +376,135 @@ function buildLoginPayload(urlEntry) {
   };
 }
 
+function expandUrlEntry(urlEntry) {
+  if (!urlEntry.wildcard?.enabled) {
+    return [{ ...urlEntry, sourceUrlId: urlEntry.id }];
+  }
+
+  const start = Number.parseInt(urlEntry.wildcard.start, 10);
+  const end = Number.parseInt(urlEntry.wildcard.end, 10);
+  if (
+    !urlEntry.url.includes(URL_WILDCARD_TOKEN) ||
+    Number.isNaN(start) ||
+    Number.isNaN(end)
+  ) {
+    return [{ ...urlEntry, sourceUrlId: urlEntry.id }];
+  }
+
+  const step = start <= end ? 1 : -1;
+  const expanded = [];
+  for (let value = start; step > 0 ? value <= end : value >= end; value += step) {
+    const valueText = String(value);
+    expanded.push({
+      ...urlEntry,
+      id: `${urlEntry.id}:${valueText}`,
+      sourceUrlId: urlEntry.id,
+      wildcardValue: valueText,
+      url: urlEntry.url.replaceAll(URL_WILDCARD_TOKEN, valueText),
+      label: (urlEntry.label || urlEntry.url).includes(URL_WILDCARD_TOKEN)
+        ? (urlEntry.label || urlEntry.url).replaceAll(
+            URL_WILDCARD_TOKEN,
+            valueText,
+          )
+        : `${urlEntry.label || urlEntry.url} ${valueText}`,
+    });
+  }
+  return expanded;
+}
+
+function expandUrlEntries(urls) {
+  return urls.flatMap(expandUrlEntry);
+}
+
 function UrlForm({ onSave, onCancel, initial }) {
   const [url, setUrl] = useState(initial?.url || "");
   const [label, setLabel] = useState(initial?.label || "");
   const [description, setDescription] = useState(initial?.description || "");
+  const [wildcardEnabled, setWildcardEnabled] = useState(
+    initial?.wildcard?.enabled || false,
+  );
+  const [wildcardStart, setWildcardStart] = useState(
+    initial?.wildcard?.start ?? "1",
+  );
+  const [wildcardEnd, setWildcardEnd] = useState(
+    initial?.wildcard?.end ?? "13",
+  );
   const [requiresAuth, setRequiresAuth] = useState(
     initial?.requiresAuth || false,
   );
   const [loginConfig, setLoginConfig] = useState(
     initial?.loginConfig || { ...EMPTY_LOGIN },
   );
+  const wildcardRangeValid =
+    !wildcardEnabled ||
+    (url.includes(URL_WILDCARD_TOKEN) &&
+      wildcardStart !== "" &&
+      wildcardEnd !== "" &&
+      !Number.isNaN(Number.parseInt(wildcardStart, 10)) &&
+      !Number.isNaN(Number.parseInt(wildcardEnd, 10)));
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Input
         label="URL"
         value={url}
         onChange={setUrl}
-        placeholder="https://app.example.com/dashboard"
+        placeholder="https://app.example.com/levels/*"
       />
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 14,
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={wildcardEnabled}
+          onChange={(e) => setWildcardEnabled(e.target.checked)}
+        />
+        Expand wildcard range
+      </label>
+      {wildcardEnabled && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 12,
+            padding: 12,
+            background: "var(--bg-secondary, #f8f9fa)",
+            borderRadius: 8,
+          }}
+        >
+          <Input
+            label="Range start"
+            type="number"
+            value={wildcardStart}
+            onChange={setWildcardStart}
+            placeholder="1"
+          />
+          <Input
+            label="Range end"
+            type="number"
+            value={wildcardEnd}
+            onChange={setWildcardEnd}
+            placeholder="13"
+          />
+          <div
+            style={{
+              gridColumn: "1 / -1",
+              fontSize: 12,
+              color: wildcardRangeValid
+                ? "var(--text-secondary, #6b7280)"
+                : "#dc2626",
+            }}
+          >
+            Use * in the URL where the range value should go.
+          </div>
+        </div>
+      )}
       <Input
         label="Label (optional)"
         value={label}
@@ -434,11 +546,16 @@ function UrlForm({ onSave, onCancel, initial }) {
               url,
               label: label || url,
               description,
+              wildcard: {
+                enabled: wildcardEnabled,
+                start: wildcardStart,
+                end: wildcardEnd,
+              },
               requiresAuth,
               loginConfig,
             })
           }
-          disabled={!url}
+          disabled={!url || !wildcardRangeValid}
         >
           {initial ? "Save Changes" : "Add URL"}
         </Btn>
@@ -448,6 +565,7 @@ function UrlForm({ onSave, onCancel, initial }) {
 }
 
 function exportCSV(urls, scans) {
+  const resultUrls = expandUrlEntries(urls);
   const rows = [
     [
       "Label",
@@ -462,7 +580,7 @@ function exportCSV(urls, scans) {
       "HTML Snippet",
     ],
   ];
-  for (const u of urls) {
+  for (const u of resultUrls) {
     const urlScans = scans.filter((s) => s.urlId === u.id);
     const latest = urlScans[urlScans.length - 1];
     if (!latest) continue;
@@ -514,7 +632,7 @@ function ScanResultsView({
   const [resultType, setResultType] = useState("violations");
 
   const urlsWithResults = useMemo(() => {
-    return urls
+    return expandUrlEntries(urls)
       .map((u) => {
         const urlScans = scans.filter((s) => s.urlId === u.id);
         const latest =
@@ -1080,6 +1198,11 @@ export default function App() {
           url: u.url,
           label: u.label || u.url,
           description: u.description || "",
+          wildcard: u.wildcard || {
+            enabled: false,
+            start: "1",
+            end: "13",
+          },
           requiresAuth: u.requiresAuth || false,
           loginConfig: u.requiresAuth
             ? {
@@ -1126,6 +1249,7 @@ export default function App() {
         url: u.url,
         label: u.label,
         description: u.description || "",
+        wildcard: u.wildcard,
         requiresAuth: u.requiresAuth,
       })),
     };
@@ -1152,7 +1276,9 @@ export default function App() {
 
   const deleteUrl = (id) => {
     setUrls((prev) => prev.filter((u) => u.id !== id));
-    setScans((prev) => prev.filter((s) => s.urlId !== id));
+    setScans((prev) =>
+      prev.filter((s) => s.urlId !== id && s.sourceUrlId !== id),
+    );
     setSelectedUrls((prev) => {
       const n = new Set(prev);
       n.delete(id);
@@ -1175,9 +1301,16 @@ export default function App() {
   };
 
   const runScan = useCallback(async () => {
-    const toScan =
+    const selectedEntries =
       selectedUrls.size > 0 ? urls.filter((u) => selectedUrls.has(u.id)) : urls;
+    const toScan = expandUrlEntries(selectedEntries);
     if (toScan.length === 0) return;
+    if (toScan.length > 20) {
+      setApiError(
+        "Maximum 20 URLs per scan. Narrow the wildcard range or selection.",
+      );
+      return;
+    }
 
     setScanning(true);
     setApiError(null);
@@ -1248,6 +1381,8 @@ export default function App() {
                 {
                   id: `${matchingUrl.id}-${Date.now()}`,
                   urlId: matchingUrl.id,
+                  sourceUrlId: matchingUrl.sourceUrlId,
+                  url: matchingUrl.url,
                   timestamp: result.timestamp,
                   violations,
                   incomplete,
@@ -1273,6 +1408,8 @@ export default function App() {
                 {
                   id: `${matchingUrl.id}-${Date.now()}`,
                   urlId: matchingUrl.id,
+                  sourceUrlId: matchingUrl.sourceUrlId,
+                  url: matchingUrl.url,
                   timestamp: Date.now(),
                   violations: [],
                   incomplete: [],
@@ -1602,10 +1739,24 @@ export default function App() {
             </Card>
           ) : (
             urls.map((u) => {
-              const urlScans = scans.filter((s) => s.urlId === u.id);
-              const latest = urlScans[urlScans.length - 1];
+              const expandedUrls = expandUrlEntry(u);
+              const latestScans = expandedUrls
+                .map((expandedUrl) => {
+                  const urlScans = scans.filter(
+                    (s) => s.urlId === expandedUrl.id,
+                  );
+                  return urlScans[urlScans.length - 1];
+                })
+                .filter(Boolean);
+              const latest = latestScans[latestScans.length - 1];
               const totalV =
-                latest && !latest.error ? latest.violations.length : null;
+                latestScans.length > 0
+                  ? latestScans.reduce(
+                      (sum, scan) =>
+                        scan.error ? sum : sum + scan.violations.length,
+                      0,
+                    )
+                  : null;
               return (
                 <Card
                   key={u.id}
@@ -1637,6 +1788,17 @@ export default function App() {
                         }}
                       >
                         {u.url}
+                      </div>
+                    )}
+                    {u.wildcard?.enabled && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--text-secondary, #6b7280)",
+                          marginTop: 2,
+                        }}
+                      >
+                        Expands {u.wildcard.start} to {u.wildcard.end}
                       </div>
                     )}
                     {u.description && (
