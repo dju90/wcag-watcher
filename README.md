@@ -1,6 +1,6 @@
 # WCAG Watcher — Frontend
 
-WCAG 2.1 accessibility monitoring dashboard. Pairs with the
+WCAG accessibility monitoring dashboard. Pairs with the
 [A11y Scanner API](../a11y-scanner-api/README.md) backend.
 
 ## Project Structure
@@ -57,10 +57,12 @@ Requires **Settings → Pages → Source** set to **Deploy from a branch** (`gh-
 
 ## Configuration
 
-The only configuration is the Scanner API URL, which can be set in two ways:
+The scanner configuration includes:
 
-- **Hardcoded default**: Change `DEFAULT_API_URL` in `src/App.jsx`
-- **At runtime**: Click ⚙ API Settings in the app header
+- **Scanner API URL**: Change `DEFAULT_API_URL` in `src/App.jsx`, or click
+  API Settings in the app header.
+- **WCAG level**: Choose the level in the scan header before running a scan.
+  The default is WCAG 2.1 AA.
 
 ## Notes
 

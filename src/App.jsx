@@ -1,6 +1,18 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 
 const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
+const DEFAULT_WCAG_LEVEL = "wcag21aa";
+const WCAG_LEVEL_OPTIONS = [
+  { value: "wcag2a", label: "WCAG 2.0 A" },
+  { value: "wcag2aa", label: "WCAG 2.0 AA" },
+  { value: "wcag2aaa", label: "WCAG 2.0 AAA" },
+  { value: "wcag21a", label: "WCAG 2.1 A" },
+  { value: "wcag21aa", label: "WCAG 2.1 AA" },
+  { value: "wcag21aaa", label: "WCAG 2.1 AAA" },
+  { value: "wcag22a", label: "WCAG 2.2 A" },
+  { value: "wcag22aa", label: "WCAG 2.2 AA" },
+  { value: "wcag22aaa", label: "WCAG 2.2 AAA" },
+];
 
 const IMPACT_ORDER = { critical: 0, serious: 1, moderate: 2, minor: 3 };
 const IMPACT_COLORS = {
@@ -123,6 +135,45 @@ function Input({ label, value, onChange, type = "text", placeholder, style }) {
           color: "var(--text, #1f2937)",
         }}
       />
+    </div>
+  );
+}
+
+function Select({ label, value, onChange, options, style, disabled }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, ...style }}>
+      {label && (
+        <label
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--text-secondary, #6b7280)",
+          }}
+        >
+          {label}
+        </label>
+      )}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        style={{
+          padding: "8px 12px",
+          borderRadius: 8,
+          border: "1px solid var(--border, #e5e7eb)",
+          fontSize: 14,
+          background: "var(--card, #fff)",
+          color: "var(--text, #1f2937)",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.6 : 1,
+        }}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -997,6 +1048,7 @@ export default function App() {
   const [expandedV, setExpandedV] = useState(null);
   const [selectedUrls, setSelectedUrls] = useState(new Set());
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
+  const [wcagLevel, setWcagLevel] = useState(DEFAULT_WCAG_LEVEL);
   const [showSettings, setShowSettings] = useState(false);
   const [apiError, setApiError] = useState(null);
   const abortRef = useRef(null);
@@ -1150,7 +1202,7 @@ export default function App() {
       const res = await fetch(`${apiUrl.replace(/\/+$/, "")}/scan/batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: batchPayload }),
+        body: JSON.stringify({ urls: batchPayload, wcagLevel }),
         signal: controller.signal,
       });
 
@@ -1200,6 +1252,7 @@ export default function App() {
                   violations,
                   incomplete,
                   passes: result.passes,
+                  wcagLevel,
                 },
               ]);
               setScanProgress((prev) =>
@@ -1244,7 +1297,7 @@ export default function App() {
       setScanning(false);
       abortRef.current = null;
     }
-  }, [urls, selectedUrls, apiUrl]);
+  }, [urls, selectedUrls, apiUrl, wcagLevel]);
 
   const cancelScan = () => {
     if (abortRef.current) abortRef.current.abort();
@@ -1277,17 +1330,33 @@ export default function App() {
           <div
             style={{ fontSize: 13, color: "var(--text-secondary, #6b7280)" }}
           >
-            WCAG 2.1 Continuous Monitoring
+            WCAG Continuous Monitoring
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "flex-end",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
           <Btn
             variant="ghost"
             onClick={() => setShowSettings(true)}
-            style={{ fontSize: 12, padding: "6px 10px" }}
+            style={{ fontSize: 12, padding: "8px 10px" }}
           >
             ⚙ API Settings
           </Btn>
+          <Select
+            label="WCAG level"
+            value={wcagLevel}
+            onChange={setWcagLevel}
+            options={WCAG_LEVEL_OPTIONS}
+            disabled={scanning}
+            style={{ minWidth: 150 }}
+          />
           {scanning ? (
             <Btn variant="danger" onClick={cancelScan}>
               Cancel Scan
