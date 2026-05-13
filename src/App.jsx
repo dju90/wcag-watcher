@@ -1,6 +1,19 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 
-const DEFAULT_API_URL = "http://localhost:3001";
+const DEFAULT_API_URL = "https://wcag-watcher-api.onrender.com";
+const DEFAULT_WCAG_LEVEL = "wcag21aa";
+const URL_WILDCARD_TOKEN = "*";
+const WCAG_LEVEL_OPTIONS = [
+  { value: "wcag2a", label: "WCAG 2.0 A" },
+  { value: "wcag2aa", label: "WCAG 2.0 AA" },
+  { value: "wcag2aaa", label: "WCAG 2.0 AAA" },
+  { value: "wcag21a", label: "WCAG 2.1 A" },
+  { value: "wcag21aa", label: "WCAG 2.1 AA" },
+  { value: "wcag21aaa", label: "WCAG 2.1 AAA" },
+  { value: "wcag22a", label: "WCAG 2.2 A" },
+  { value: "wcag22aa", label: "WCAG 2.2 AA" },
+  { value: "wcag22aaa", label: "WCAG 2.2 AAA" },
+];
 
 const IMPACT_ORDER = { critical: 0, serious: 1, moderate: 2, minor: 3 };
 const IMPACT_COLORS = {
@@ -131,6 +144,45 @@ function Input({ label, value, onChange, type = "text", placeholder, style }) {
           color: "var(--text, #1f2937)",
         }}
       />
+    </div>
+  );
+}
+
+function Select({ label, value, onChange, options, style, disabled }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, ...style }}>
+      {label && (
+        <label
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--text-secondary, #6b7280)",
+          }}
+        >
+          {label}
+        </label>
+      )}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        style={{
+          padding: "8px 12px",
+          borderRadius: 8,
+          border: "1px solid var(--border, #e5e7eb)",
+          fontSize: 14,
+          background: "var(--card, #fff)",
+          color: "var(--text, #1f2937)",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.6 : 1,
+        }}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -332,24 +384,193 @@ function buildLoginPayload(urlEntry) {
   };
 }
 
+function expandUrlEntry(urlEntry) {
+  if (!urlEntry.wildcard?.enabled) {
+    return [{ ...urlEntry, sourceUrlId: urlEntry.id }];
+  }
+
+  const start = Number.parseInt(urlEntry.wildcard.start, 10);
+  const end = Number.parseInt(urlEntry.wildcard.end, 10);
+  if (
+    !urlEntry.url.includes(URL_WILDCARD_TOKEN) ||
+    Number.isNaN(start) ||
+    Number.isNaN(end)
+  ) {
+    return [{ ...urlEntry, sourceUrlId: urlEntry.id }];
+  }
+
+  const step = start <= end ? 1 : -1;
+  const expanded = [];
+  for (let value = start; step > 0 ? value <= end : value >= end; value += step) {
+    const valueText = String(value);
+    expanded.push({
+      ...urlEntry,
+      id: `${urlEntry.id}:${valueText}`,
+      sourceUrlId: urlEntry.id,
+      wildcardValue: valueText,
+      url: urlEntry.url.replaceAll(URL_WILDCARD_TOKEN, valueText),
+      label: (urlEntry.label || urlEntry.url).includes(URL_WILDCARD_TOKEN)
+        ? (urlEntry.label || urlEntry.url).replaceAll(
+            URL_WILDCARD_TOKEN,
+            valueText,
+          )
+        : `${urlEntry.label || urlEntry.url} ${valueText}`,
+    });
+  }
+  return expanded;
+}
+
+function expandUrlEntries(urls) {
+  return urls.flatMap(expandUrlEntry);
+}
+
+function normalizeWildcardConfig(urlEntry) {
+  const wildcard = urlEntry.wildcard || {};
+  const range = urlEntry.range || {};
+  const start =
+    wildcard.start ??
+    range.start ??
+    urlEntry.wildcardStart ??
+    urlEntry.rangeStart ??
+    "1";
+  const end =
+    wildcard.end ??
+    range.end ??
+    urlEntry.wildcardEnd ??
+    urlEntry.rangeEnd ??
+    "13";
+  const hasImportedRange =
+    urlEntry.wildcard ||
+    urlEntry.range ||
+    urlEntry.wildcardStart !== undefined ||
+    urlEntry.wildcardEnd !== undefined ||
+    urlEntry.rangeStart !== undefined ||
+    urlEntry.rangeEnd !== undefined;
+
+  return {
+    enabled: Boolean(
+      wildcard.enabled ??
+        range.enabled ??
+        (hasImportedRange &&
+          String(urlEntry.url || "").includes(URL_WILDCARD_TOKEN)),
+    ),
+    start: String(start),
+    end: String(end),
+  };
+}
+
+function normalizeFindingText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function getFindingFingerprint(finding) {
+  const nodeKey = (finding.nodes || [])
+    .map(
+      (node) =>
+        `${normalizeFindingText(node.selector)}|${normalizeFindingText(
+          node.html,
+        )}|${normalizeFindingText(node.failureSummary)}`,
+    )
+    .sort()
+    .join("||");
+  return [
+    finding.ruleId,
+    finding.criterion || "",
+    finding.impact || "",
+    normalizeFindingText(finding.desc),
+    nodeKey,
+  ].join("::");
+}
+
 function UrlForm({ onSave, onCancel, initial }) {
   const [url, setUrl] = useState(initial?.url || "");
   const [label, setLabel] = useState(initial?.label || "");
   const [description, setDescription] = useState(initial?.description || "");
+  const [wildcardEnabled, setWildcardEnabled] = useState(
+    initial?.wildcard?.enabled || false,
+  );
+  const [wildcardStart, setWildcardStart] = useState(
+    initial?.wildcard?.start ?? "1",
+  );
+  const [wildcardEnd, setWildcardEnd] = useState(
+    initial?.wildcard?.end ?? "13",
+  );
   const [requiresAuth, setRequiresAuth] = useState(
     initial?.requiresAuth || false,
   );
   const [loginConfig, setLoginConfig] = useState(
     initial?.loginConfig || { ...EMPTY_LOGIN },
   );
+  const wildcardRangeValid =
+    !wildcardEnabled ||
+    (url.includes(URL_WILDCARD_TOKEN) &&
+      wildcardStart !== "" &&
+      wildcardEnd !== "" &&
+      !Number.isNaN(Number.parseInt(wildcardStart, 10)) &&
+      !Number.isNaN(Number.parseInt(wildcardEnd, 10)));
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Input
         label="URL"
         value={url}
         onChange={setUrl}
-        placeholder="https://app.example.com/dashboard"
+        placeholder="https://app.example.com/levels/*"
       />
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 14,
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={wildcardEnabled}
+          onChange={(e) => setWildcardEnabled(e.target.checked)}
+        />
+        Expand wildcard range
+      </label>
+      {wildcardEnabled && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 12,
+            padding: 12,
+            background: "var(--bg-secondary, #f8f9fa)",
+            borderRadius: 8,
+          }}
+        >
+          <Input
+            label="Range start"
+            type="number"
+            value={wildcardStart}
+            onChange={setWildcardStart}
+            placeholder="1"
+          />
+          <Input
+            label="Range end"
+            type="number"
+            value={wildcardEnd}
+            onChange={setWildcardEnd}
+            placeholder="13"
+          />
+          <div
+            style={{
+              gridColumn: "1 / -1",
+              fontSize: 12,
+              color: wildcardRangeValid
+                ? "var(--text-secondary, #6b7280)"
+                : "#dc2626",
+            }}
+          >
+            Use * in the URL where the range value should go.
+          </div>
+        </div>
+      )}
       <Input
         label="Label (optional)"
         value={label}
@@ -391,11 +612,16 @@ function UrlForm({ onSave, onCancel, initial }) {
               url,
               label: label || url,
               description,
+              wildcard: {
+                enabled: wildcardEnabled,
+                start: wildcardStart,
+                end: wildcardEnd,
+              },
               requiresAuth,
               loginConfig,
             })
           }
-          disabled={!url}
+          disabled={!url || !wildcardRangeValid}
         >
           {initial ? "Save Changes" : "Add URL"}
         </Btn>
@@ -405,6 +631,7 @@ function UrlForm({ onSave, onCancel, initial }) {
 }
 
 function exportCSV(urls, scans) {
+  const resultUrls = expandUrlEntries(urls);
   const rows = [
     [
       "Label",
@@ -419,7 +646,7 @@ function exportCSV(urls, scans) {
       "HTML Snippet",
     ],
   ];
-  for (const u of urls) {
+  for (const u of resultUrls) {
     const urlScans = scans.filter((s) => s.urlId === u.id);
     const latest = urlScans[urlScans.length - 1];
     if (!latest) continue;
@@ -444,7 +671,7 @@ function exportCSV(urls, scans) {
       }
     };
     addRows(latest.violations, "Violation");
-    addRows(latest.incomplete || [], "Needs Review");
+    addRows(latest.incomplete || [], "Potential Issue");
   }
   const csv = rows.map((r) => r.join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
@@ -545,9 +772,10 @@ function ScanResultsView({
   const [htmlcsTypeFilter, setHtmlcsTypeFilter] = useState("all");
   const [aceLevelFilter, setAceLevelFilter] = useState("all");
   const [xeBucketFilter, setXeBucketFilter] = useState("all");
+  const [scopeFilter, setScopeFilter] = useState("all");
 
   const urlsWithResults = useMemo(() => {
-    return urls
+    return expandUrlEntries(urls)
       .map((u) => {
         const urlScans = scans.filter((s) => s.urlId === u.id);
         const latest =
@@ -598,21 +826,125 @@ function ScanResultsView({
     return [...s].sort();
   }, [urlsWithResults, resultType]);
 
-  // Items to render per URL — shape varies by mode.
+  // Per-engine fingerprint used to detect findings that appear on multiple
+  // pages. Generalized so the unique/recurring scope filter works across all
+  // engine modes, not just axe.
+  const getOccurrenceFingerprint = (item, mode) => {
+    if (mode === "violations" || mode === "incomplete") {
+      return getFindingFingerprint(item);
+    }
+    if (mode === "htmlcs") {
+      return [
+        "htmlcs",
+        item.code || "",
+        item.type || "",
+        normalizeFindingText(item.msg),
+        normalizeFindingText(item.selector),
+      ].join("::");
+    }
+    if (mode === "ace") {
+      return [
+        "ace",
+        item.ruleId || "",
+        item.level || "",
+        normalizeFindingText(item.message),
+        normalizeFindingText(item.xpath),
+      ].join("::");
+    }
+    return [
+      "xe",
+      item._bucket || "",
+      normalizeFindingText(item.selector),
+      normalizeFindingText(item.html),
+    ].join("::");
+  };
+
+  const getRawItemsForMode = (u, mode) => {
+    const l = u.latest;
+    if (!l || l.error) return [];
+    if (mode === "violations") return l.violations || [];
+    if (mode === "incomplete") return l.incomplete || [];
+    if (mode === "htmlcs") {
+      return (l.htmlcs || []).filter(
+        (i) => i.type === "error" || i.type === "warning",
+      );
+    }
+    if (mode === "ace") {
+      return (l.ace || []).filter(
+        (i) => i.level === "violation" || i.level === "potentialviolation",
+      );
+    }
+    const r = l.reconciled || {
+      corroborated: [],
+      axeOnly: [],
+      htmlcsOnly: [],
+      aceOnly: [],
+    };
+    return [
+      ...r.corroborated.map((e) => ({ ...e, _bucket: "corroborated" })),
+      ...r.axeOnly.map((e) => ({ ...e, _bucket: "axeOnly" })),
+      ...r.htmlcsOnly.map((e) => ({ ...e, _bucket: "htmlcsOnly" })),
+      ...r.aceOnly.map((e) => ({ ...e, _bucket: "aceOnly" })),
+    ].map((e, i) => ({ ...e, id: e.id ?? `xe-${e._bucket}-${i}` }));
+  };
+
+  const occurrenceByFingerprint = useMemo(() => {
+    const occurrences = new Map();
+    urlsWithResults.forEach((u) => {
+      getRawItemsForMode(u, resultType).forEach((item) => {
+        const fp = getOccurrenceFingerprint(item, resultType);
+        if (!occurrences.has(fp)) {
+          occurrences.set(fp, { urlSet: new Set() });
+        }
+        occurrences.get(fp).urlSet.add(u.url);
+      });
+    });
+    return new Map(
+      [...occurrences.entries()].map(([fp, occurrence]) => {
+        const occurrenceUrls = [...occurrence.urlSet];
+        return [
+          fp,
+          { count: occurrenceUrls.length, urls: occurrenceUrls },
+        ];
+      }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlsWithResults, resultType]);
+
+  const annotateWithOccurrence = (u, item) => {
+    const occurrence =
+      occurrenceByFingerprint.get(getOccurrenceFingerprint(item, resultType)) ||
+      {};
+    return {
+      ...item,
+      occurrenceCount: occurrence.count || 1,
+      occurrenceUrls: occurrence.urls || [u.url],
+    };
+  };
+
+  // Items to render per URL — shape varies by mode. Each item carries an
+  // occurrenceCount so the scope filter (unique/recurring) applies uniformly
+  // across engine modes.
   const filtered = useMemo(() => {
     return urlsWithResults.map((u) => {
       const l = u.latest;
       if (!l || l.error) return { ...u, items: [] };
-      let items = [];
+
+      const baseItems = getRawItemsForMode(u, resultType).map((item) =>
+        annotateWithOccurrence(u, item),
+      );
+
+      const scoped = baseItems.filter(
+        (v) =>
+          scopeFilter === "all" ||
+          (scopeFilter === "unique" && v.occurrenceCount === 1) ||
+          (scopeFilter === "recurring" && v.occurrenceCount > 1),
+      );
+
+      let items;
       if (resultType === "violations" || resultType === "incomplete") {
-        const source =
-          resultType === "violations"
-            ? l.violations || []
-            : l.incomplete || [];
-        items = source
-          .filter(
-            (v) => impactFilter === "all" || v.impact === impactFilter,
-          )
+        items = scoped
+          .filter((v) => impactFilter === "all" || v.impact === impactFilter)
           .filter(
             (v) =>
               criterionFilter === "all" || v.criterion === criterionFilter,
@@ -622,43 +954,23 @@ function ScanResultsView({
               (IMPACT_ORDER[a.impact] ?? 4) - (IMPACT_ORDER[b.impact] ?? 4),
           );
       } else if (resultType === "htmlcs") {
-        items = (l.htmlcs || [])
-          .filter((i) => i.type === "error" || i.type === "warning")
-          .filter(
-            (i) => htmlcsTypeFilter === "all" || i.type === htmlcsTypeFilter,
-          );
+        items = scoped.filter(
+          (i) => htmlcsTypeFilter === "all" || i.type === htmlcsTypeFilter,
+        );
       } else if (resultType === "ace") {
-        items = (l.ace || [])
-          .filter(
-            (i) =>
-              i.level === "violation" || i.level === "potentialviolation",
-          )
-          .filter(
-            (i) => aceLevelFilter === "all" || i.level === aceLevelFilter,
-          );
-      } else if (resultType === "crossEngine") {
-        const r = l.reconciled || {
-          corroborated: [],
-          axeOnly: [],
-          htmlcsOnly: [],
-          aceOnly: [],
-        };
-        const all = [
-          ...r.corroborated.map((e) => ({ ...e, _bucket: "corroborated" })),
-          ...r.axeOnly.map((e) => ({ ...e, _bucket: "axeOnly" })),
-          ...r.htmlcsOnly.map((e) => ({ ...e, _bucket: "htmlcsOnly" })),
-          ...r.aceOnly.map((e) => ({ ...e, _bucket: "aceOnly" })),
-        ];
-        const picked =
+        items = scoped.filter(
+          (i) => aceLevelFilter === "all" || i.level === aceLevelFilter,
+        );
+      } else {
+        items = (
           xeBucketFilter === "all"
-            ? all
-            : all.filter((e) => e._bucket === xeBucketFilter);
-        items = picked
-          .map((e, i) => ({ ...e, id: `xe-${e._bucket}-${i}` }))
-          .sort((a, b) => b.engines.length - a.engines.length);
+            ? scoped
+            : scoped.filter((e) => e._bucket === xeBucketFilter)
+        ).sort((a, b) => b.engines.length - a.engines.length);
       }
       return { ...u, items };
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     urlsWithResults,
     resultType,
@@ -667,6 +979,8 @@ function ScanResultsView({
     htmlcsTypeFilter,
     aceLevelFilter,
     xeBucketFilter,
+    scopeFilter,
+    occurrenceByFingerprint,
   ]);
 
   // Bottom-bar element/finding count.
@@ -680,6 +994,49 @@ function ScanResultsView({
     }
     return filtered.reduce((s, u) => s + u.items.length, 0);
   }, [filtered, resultType]);
+
+  const totalViolations = urlsWithResults.reduce(
+    (s, u) => s + (u.latest?.violations?.length || 0),
+    0,
+  );
+  const totalIncomplete = urlsWithResults.reduce(
+    (s, u) => s + (u.latest?.incomplete?.length || 0),
+    0,
+  );
+
+  // All items across all URLs in the current mode (before impact/criterion/
+  // scope filters) — drives the Scope pill counts.
+  const unfilteredItems = useMemo(() => {
+    return urlsWithResults.flatMap((u) =>
+      getRawItemsForMode(u, resultType).map((item) =>
+        annotateWithOccurrence(u, item),
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlsWithResults, resultType, occurrenceByFingerprint]);
+
+  // Group wildcard-expanded URLs visually under a single header.
+  const resultGroups = useMemo(() => {
+    const sourceById = new Map(urls.map((u) => [u.id, u]));
+    const groups = [];
+    const groupById = new Map();
+    filtered.forEach((u) => {
+      const source = sourceById.get(u.sourceUrlId) || u;
+      const groupId = source.wildcard?.enabled ? source.id : u.id;
+      if (!groupById.has(groupId)) {
+        const group = {
+          id: groupId,
+          source,
+          isWildcard: Boolean(source.wildcard?.enabled),
+          urls: [],
+        };
+        groupById.set(groupId, group);
+        groups.push(group);
+      }
+      groupById.get(groupId).urls.push(u);
+    });
+    return groups;
+  }, [filtered, urls]);
 
   if (urlsWithResults.length === 0) {
     return (
@@ -744,6 +1101,517 @@ function ScanResultsView({
     </div>
   );
 
+  const itemNoun =
+    resultType === "violations"
+      ? "violation"
+      : resultType === "incomplete"
+        ? "potential issue"
+        : "finding";
+
+  const filtersAreActive =
+    scopeFilter !== "all" ||
+    ((resultType === "violations" || resultType === "incomplete") &&
+      (impactFilter !== "all" || criterionFilter !== "all")) ||
+    (resultType === "htmlcs" && htmlcsTypeFilter !== "all") ||
+    (resultType === "ace" && aceLevelFilter !== "all") ||
+    (resultType === "crossEngine" && xeBucketFilter !== "all");
+
+  const renderOccurrenceBadge = (item) =>
+    item.occurrenceCount > 1 ? (
+      <Badge
+        label={`Appears on ${item.occurrenceCount} pages`}
+        color="#7c3aed"
+      />
+    ) : null;
+
+  const renderResultPage = (u, grouped = false) => {
+    const itemCount = u.items.length;
+    return (
+      <Card
+        key={u.id}
+        style={{
+          padding: 0,
+          overflow: "hidden",
+          ...(grouped
+            ? {
+                borderRadius: 0,
+                borderLeft: "none",
+                borderRight: "none",
+                borderBottom: "none",
+              }
+            : {}),
+        }}
+      >
+        <div
+          style={{
+            padding: "12px 16px",
+            background: "var(--bg-secondary, #f8f9fa)",
+            borderBottom: "1px solid var(--border, #e5e7eb)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>{u.label}</div>
+            {u.label !== u.url && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-secondary, #6b7280)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {u.url}
+              </div>
+            )}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexShrink: 0,
+            }}
+          >
+            {u.latest.error ? (
+              <Badge label="Scan Error" color="#dc2626" />
+            ) : (
+              <>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "var(--text-secondary, #9ca3af)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {new Date(u.latest.timestamp).toLocaleString()}
+                </span>
+                <Badge
+                  label={`${itemCount} ${itemNoun}${itemCount !== 1 ? "s" : ""}`}
+                  color={
+                    itemCount > 0
+                      ? resultType === "incomplete"
+                        ? "#ca8a04"
+                        : "#dc2626"
+                      : "#16a34a"
+                  }
+                />
+              </>
+            )}
+          </div>
+        </div>
+
+        {u.latest.error ? (
+          <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
+            <strong>Scan failed:</strong> {u.latest.error}
+          </div>
+        ) : itemCount === 0 ? (
+          <div
+            style={{
+              padding: 20,
+              textAlign: "center",
+              color: "var(--text-secondary, #6b7280)",
+              fontSize: 14,
+            }}
+          >
+            No {itemNoun}s in this view
+            {filtersAreActive ? " matching filters" : ""} ✓
+          </div>
+        ) : resultType === "violations" || resultType === "incomplete" ? (
+          u.items.map((v) => {
+            const key = `${u.id}-${v.id}`;
+            const isExp = expandedV === key;
+            return (
+              <div
+                key={v.id}
+                style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
+              >
+                <div
+                  onClick={() => setExpandedV(isExp ? null : key)}
+                  style={{
+                    padding: "10px 16px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    background: isExp
+                      ? "var(--bg-secondary, #fafafa)"
+                      : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 12,
+                      transform: isExp ? "rotate(90deg)" : "none",
+                      transition: "transform 0.15s",
+                    }}
+                  >
+                    ▶
+                  </span>
+                  <ImpactBadge impact={v.impact} />
+                  <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>
+                    {v.ruleId}
+                  </span>
+                  {v.criterion && v.criterion !== "—" && (
+                    <Badge label={`WCAG ${v.criterion}`} color="#2563eb" />
+                  )}
+                  {renderOccurrenceBadge(v)}
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-secondary, #6b7280)",
+                    }}
+                  >
+                    {v.nodes.length} element{v.nodes.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                {isExp && (
+                  <div
+                    style={{
+                      padding: "0 16px 12px 44px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "var(--text-secondary, #4b5563)",
+                      }}
+                    >
+                      {v.desc}
+                    </div>
+                    {v.help && (
+                      <a
+                        href={v.help}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: 12, color: "#2563eb" }}
+                      >
+                        How to fix →
+                      </a>
+                    )}
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "var(--text-secondary, #6b7280)",
+                        marginTop: 4,
+                      }}
+                    >
+                      Affected Elements:
+                    </div>
+                    {v.nodes.map((n, ni) => (
+                      <ElementCard
+                        key={ni}
+                        selector={n.selector}
+                        html={n.html}
+                        note={n.failureSummary}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        ) : resultType === "htmlcs" ? (
+          u.items.map((i) => {
+            const key = `${u.id}-${i.id}`;
+            const isExp = expandedV === key;
+            return (
+              <div
+                key={i.id}
+                style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
+              >
+                <div
+                  onClick={() => setExpandedV(isExp ? null : key)}
+                  style={{
+                    padding: "10px 16px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    background: isExp
+                      ? "var(--bg-secondary, #fafafa)"
+                      : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 12,
+                      transform: isExp ? "rotate(90deg)" : "none",
+                      transition: "transform 0.15s",
+                    }}
+                  >
+                    ▶
+                  </span>
+                  <Badge
+                    label={i.type}
+                    color={i.type === "error" ? "#dc2626" : "#ca8a04"}
+                  />
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontFamily: "monospace",
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {i.code}
+                  </span>
+                  {i.criterion && i.criterion !== "—" && (
+                    <Badge label={`WCAG ${i.criterion}`} color="#2563eb" />
+                  )}
+                  {renderOccurrenceBadge(i)}
+                </div>
+                {isExp && (
+                  <div
+                    style={{
+                      padding: "0 16px 12px 44px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "var(--text-secondary, #4b5563)",
+                      }}
+                    >
+                      {i.msg}
+                    </div>
+                    <ElementCard selector={i.selector} html={i.html} />
+                  </div>
+                )}
+              </div>
+            );
+          })
+        ) : resultType === "ace" ? (
+          u.items.map((i) => {
+            const key = `${u.id}-${i.id}`;
+            const isExp = expandedV === key;
+            const lvlColor =
+              i.level === "violation" ? "#dc2626" : "#ca8a04";
+            return (
+              <div
+                key={i.id}
+                style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
+              >
+                <div
+                  onClick={() => setExpandedV(isExp ? null : key)}
+                  style={{
+                    padding: "10px 16px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    background: isExp
+                      ? "var(--bg-secondary, #fafafa)"
+                      : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 12,
+                      transform: isExp ? "rotate(90deg)" : "none",
+                      transition: "transform 0.15s",
+                    }}
+                  >
+                    ▶
+                  </span>
+                  <Badge
+                    label={
+                      i.level === "violation" ? "violation" : "potential"
+                    }
+                    color={lvlColor}
+                  />
+                  <span
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {i.ruleId}
+                  </span>
+                  {renderOccurrenceBadge(i)}
+                </div>
+                {isExp && (
+                  <div
+                    style={{
+                      padding: "0 16px 12px 44px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "var(--text-secondary, #4b5563)",
+                      }}
+                    >
+                      {i.message}
+                    </div>
+                    <ElementCard
+                      selector={i.xpath}
+                      html={i.html || i.snippet}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })
+        ) : (
+          // Cross-engine: per element
+          u.items.map((e) => {
+            const key = `${u.id}-${e.id}`;
+            const isExp = expandedV === key;
+            const cnt = e.engines.length;
+            const cntColor =
+              cnt === 3 ? "#16a34a" : cnt === 2 ? "#0891b2" : "#6b7280";
+            return (
+              <div
+                key={e.id}
+                style={{ borderBottom: "1px solid var(--border, #e5e7eb)" }}
+              >
+                <div
+                  onClick={() => setExpandedV(isExp ? null : key)}
+                  style={{
+                    padding: "10px 16px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    background: isExp
+                      ? "var(--bg-secondary, #fafafa)"
+                      : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 12,
+                      transform: isExp ? "rotate(90deg)" : "none",
+                      transition: "transform 0.15s",
+                    }}
+                  >
+                    ▶
+                  </span>
+                  <Badge label={`${cnt}/3 engines`} color={cntColor} />
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontFamily: "monospace",
+                      color: "#2563eb",
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {e.selector || "(unresolved selector)"}
+                  </span>
+                  {e.engines.map((eng) => (
+                    <Badge key={eng} label={eng} color={ENGINE_COLORS[eng]} />
+                  ))}
+                  {renderOccurrenceBadge(e)}
+                </div>
+                {isExp && (
+                  <div
+                    style={{
+                      padding: "0 16px 12px 44px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 12,
+                    }}
+                  >
+                    <ElementCard html={e.html} />
+                    {e.axe.length > 0 && (
+                      <EngineFindings label="axe-core" color="#dc2626">
+                        {e.axe.map((f, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              fontSize: 12,
+                              color: "var(--text, #1f2937)",
+                            }}
+                          >
+                            <strong>{f.ruleId}</strong> ({f.impact}) —{" "}
+                            {f.desc}
+                          </div>
+                        ))}
+                      </EngineFindings>
+                    )}
+                    {e.htmlcs.length > 0 && (
+                      <EngineFindings
+                        label="HTML_CodeSniffer"
+                        color="#7c3aed"
+                      >
+                        {e.htmlcs.map((f, i) => (
+                          <div
+                            key={i}
+                            style={{ fontSize: 12, lineHeight: 1.4 }}
+                          >
+                            <Badge
+                              label={f.type}
+                              color={
+                                f.type === "error" ? "#dc2626" : "#ca8a04"
+                              }
+                            />{" "}
+                            <code style={{ fontSize: 11 }}>{f.code}</code> —{" "}
+                            {f.msg}
+                          </div>
+                        ))}
+                      </EngineFindings>
+                    )}
+                    {e.ace.length > 0 && (
+                      <EngineFindings
+                        label="IBM Equal Access"
+                        color="#0891b2"
+                      >
+                        {e.ace.map((f, i) => (
+                          <div
+                            key={i}
+                            style={{ fontSize: 12, lineHeight: 1.4 }}
+                          >
+                            <Badge
+                              label={
+                                f.level === "violation"
+                                  ? "violation"
+                                  : "potential"
+                              }
+                              color={
+                                f.level === "violation"
+                                  ? "#dc2626"
+                                  : "#ca8a04"
+                              }
+                            />{" "}
+                            <strong>{f.ruleId}</strong> — {f.message}
+                          </div>
+                        ))}
+                      </EngineFindings>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </Card>
+    );
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Mode-switcher stat cards */}
@@ -752,7 +1620,7 @@ function ScanResultsView({
         {modeCard(
           "incomplete",
           totals.incomplete,
-          "AXE NEEDS REVIEW",
+          "AXE POTENTIAL ISSUES",
           "#ca8a04",
         )}
         {modeCard(
@@ -875,6 +1743,42 @@ function ScanResultsView({
             xeBucketFilter,
             setXeBucketFilter,
           )}
+        {/* Scope (unique/recurring) is universal across all engine modes. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--text-secondary, #6b7280)",
+            }}
+          >
+            Scope:
+          </span>
+          {[
+            { key: "all", label: "All" },
+            { key: "unique", label: "Unique" },
+            { key: "recurring", label: "Recurring" },
+          ].map((scope) => {
+            const count =
+              scope.key === "all"
+                ? unfilteredItems.length
+                : unfilteredItems.filter((v) =>
+                    scope.key === "unique"
+                      ? v.occurrenceCount === 1
+                      : v.occurrenceCount > 1,
+                  ).length;
+            return (
+              <Btn
+                key={scope.key}
+                variant={scopeFilter === scope.key ? "primary" : "secondary"}
+                onClick={() => setScopeFilter(scope.key)}
+                style={{ padding: "4px 10px", fontSize: 12 }}
+              >
+                {scope.label} ({count})
+              </Btn>
+            );
+          })}
+        </div>
         <div style={{ flex: 1 }} />
         <Btn
           variant="secondary"
@@ -885,465 +1789,81 @@ function ScanResultsView({
         </Btn>
       </div>
 
-      {/* Per-URL result cards */}
-      {filtered.map((u) => (
-        <Card key={u.id} style={{ padding: 0, overflow: "hidden" }}>
+      {/* Per-URL result cards; wildcard-expanded URLs are grouped visually. */}
+      {resultGroups.map((group) => {
+        if (!group.isWildcard) return renderResultPage(group.urls[0]);
+
+        const totalItems = group.urls.reduce(
+          (sum, u) => sum + u.items.length,
+          0,
+        );
+        const errorCount = group.urls.filter((u) => u.latest.error).length;
+
+        return (
           <div
+            key={group.id}
             style={{
-              padding: "12px 16px",
-              background: "var(--bg-secondary, #f8f9fa)",
-              borderBottom: "1px solid var(--border, #e5e7eb)",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
+              border: "1px solid var(--border, #e5e7eb)",
+              borderRadius: 10,
+              overflow: "hidden",
+              background: "var(--card, #fff)",
             }}
           >
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{u.label}</div>
-              {u.label !== u.url && (
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "var(--bg-secondary, #eef2ff)",
+                borderBottom: "1px solid var(--border, #e5e7eb)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>
+                  {group.source.label}
+                </div>
                 <div
                   style={{
                     fontSize: 12,
                     color: "var(--text-secondary, #6b7280)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {u.url}
+                  {group.source.url}
                 </div>
-              )}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexShrink: 0,
+                  flexWrap: "wrap",
+                  justifyContent: "flex-end",
+                }}
+              >
+                <Badge label={`${group.urls.length} pages`} color="#2563eb" />
+                <Badge
+                  label={`${totalItems} ${itemNoun}${
+                    totalItems !== 1 ? "s" : ""
+                  }`}
+                  color={totalItems > 0 ? "#dc2626" : "#16a34a"}
+                />
+                {errorCount > 0 && (
+                  <Badge label={`${errorCount} errors`} color="#dc2626" />
+                )}
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {u.latest.error ? (
-                <Badge label="Scan Error" color="#dc2626" />
-              ) : (
-                <>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: "var(--text-secondary, #9ca3af)",
-                    }}
-                  >
-                    {new Date(u.latest.timestamp).toLocaleString()}
-                  </span>
-                  <Badge
-                    label={`${u.items.length} ${
-                      u.items.length === 1 ? "finding" : "findings"
-                    }`}
-                    color={u.items.length > 0 ? "#dc2626" : "#16a34a"}
-                  />
-                </>
-              )}
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {group.urls.map((u) => renderResultPage(u, true))}
             </div>
           </div>
-
-          {u.latest.error ? (
-            <div style={{ padding: 16, color: "#dc2626", fontSize: 13 }}>
-              <strong>Scan failed:</strong> {u.latest.error}
-            </div>
-          ) : u.items.length === 0 ? (
-            <div
-              style={{
-                padding: 20,
-                textAlign: "center",
-                color: "var(--text-secondary, #6b7280)",
-                fontSize: 14,
-              }}
-            >
-              No findings in this view ✓
-            </div>
-          ) : resultType === "violations" || resultType === "incomplete" ? (
-            u.items.map((v) => {
-              const key = `${u.id}-${v.id}`;
-              const isExp = expandedV === key;
-              return (
-                <div
-                  key={v.id}
-                  style={{
-                    borderBottom: "1px solid var(--border, #e5e7eb)",
-                  }}
-                >
-                  <div
-                    onClick={() => setExpandedV(isExp ? null : key)}
-                    style={{
-                      padding: "10px 16px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      background: isExp
-                        ? "var(--bg-secondary, #fafafa)"
-                        : "transparent",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 12,
-                        transform: isExp ? "rotate(90deg)" : "none",
-                        transition: "transform 0.15s",
-                      }}
-                    >
-                      ▶
-                    </span>
-                    <ImpactBadge impact={v.impact} />
-                    <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>
-                      {v.ruleId}
-                    </span>
-                    {v.criterion && v.criterion !== "—" && (
-                      <Badge label={`WCAG ${v.criterion}`} color="#2563eb" />
-                    )}
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "var(--text-secondary, #6b7280)",
-                      }}
-                    >
-                      {v.nodes.length} element
-                      {v.nodes.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  {isExp && (
-                    <div
-                      style={{
-                        padding: "0 16px 12px 44px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 10,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-secondary, #4b5563)",
-                        }}
-                      >
-                        {v.desc}
-                      </div>
-                      {v.help && (
-                        <a
-                          href={v.help}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ fontSize: 12, color: "#2563eb" }}
-                        >
-                          How to fix →
-                        </a>
-                      )}
-                      <div
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: "var(--text-secondary, #6b7280)",
-                          marginTop: 4,
-                        }}
-                      >
-                        Affected Elements:
-                      </div>
-                      {v.nodes.map((n, ni) => (
-                        <ElementCard
-                          key={ni}
-                          selector={n.selector}
-                          html={n.html}
-                          note={n.failureSummary}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          ) : resultType === "htmlcs" ? (
-            u.items.map((i) => {
-              const key = `${u.id}-${i.id}`;
-              const isExp = expandedV === key;
-              return (
-                <div
-                  key={i.id}
-                  style={{
-                    borderBottom: "1px solid var(--border, #e5e7eb)",
-                  }}
-                >
-                  <div
-                    onClick={() => setExpandedV(isExp ? null : key)}
-                    style={{
-                      padding: "10px 16px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      background: isExp
-                        ? "var(--bg-secondary, #fafafa)"
-                        : "transparent",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 12,
-                        transform: isExp ? "rotate(90deg)" : "none",
-                        transition: "transform 0.15s",
-                      }}
-                    >
-                      ▶
-                    </span>
-                    <Badge
-                      label={i.type}
-                      color={i.type === "error" ? "#dc2626" : "#ca8a04"}
-                    />
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontFamily: "monospace",
-                        flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {i.code}
-                    </span>
-                    {i.criterion && i.criterion !== "—" && (
-                      <Badge label={`WCAG ${i.criterion}`} color="#2563eb" />
-                    )}
-                  </div>
-                  {isExp && (
-                    <div
-                      style={{
-                        padding: "0 16px 12px 44px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 10,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-secondary, #4b5563)",
-                        }}
-                      >
-                        {i.msg}
-                      </div>
-                      <ElementCard selector={i.selector} html={i.html} />
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          ) : resultType === "ace" ? (
-            u.items.map((i) => {
-              const key = `${u.id}-${i.id}`;
-              const isExp = expandedV === key;
-              const lvlColor =
-                i.level === "violation" ? "#dc2626" : "#ca8a04";
-              return (
-                <div
-                  key={i.id}
-                  style={{
-                    borderBottom: "1px solid var(--border, #e5e7eb)",
-                  }}
-                >
-                  <div
-                    onClick={() => setExpandedV(isExp ? null : key)}
-                    style={{
-                      padding: "10px 16px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      background: isExp
-                        ? "var(--bg-secondary, #fafafa)"
-                        : "transparent",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 12,
-                        transform: isExp ? "rotate(90deg)" : "none",
-                        transition: "transform 0.15s",
-                      }}
-                    >
-                      ▶
-                    </span>
-                    <Badge
-                      label={
-                        i.level === "violation" ? "violation" : "potential"
-                      }
-                      color={lvlColor}
-                    />
-                    <span
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 600,
-                        flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {i.ruleId}
-                    </span>
-                  </div>
-                  {isExp && (
-                    <div
-                      style={{
-                        padding: "0 16px 12px 44px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 10,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-secondary, #4b5563)",
-                        }}
-                      >
-                        {i.message}
-                      </div>
-                      <ElementCard
-                        selector={i.xpath}
-                        html={i.html || i.snippet}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          ) : (
-            // Cross-engine: per element
-            u.items.map((e) => {
-              const key = `${u.id}-${e.id}`;
-              const isExp = expandedV === key;
-              const cnt = e.engines.length;
-              const cntColor =
-                cnt === 3 ? "#16a34a" : cnt === 2 ? "#0891b2" : "#6b7280";
-              return (
-                <div
-                  key={e.id}
-                  style={{
-                    borderBottom: "1px solid var(--border, #e5e7eb)",
-                  }}
-                >
-                  <div
-                    onClick={() => setExpandedV(isExp ? null : key)}
-                    style={{
-                      padding: "10px 16px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      background: isExp
-                        ? "var(--bg-secondary, #fafafa)"
-                        : "transparent",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 12,
-                        transform: isExp ? "rotate(90deg)" : "none",
-                        transition: "transform 0.15s",
-                      }}
-                    >
-                      ▶
-                    </span>
-                    <Badge label={`${cnt}/3 engines`} color={cntColor} />
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontFamily: "monospace",
-                        color: "#2563eb",
-                        flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {e.selector || "(unresolved selector)"}
-                    </span>
-                    {e.engines.map((eng) => (
-                      <Badge key={eng} label={eng} color={ENGINE_COLORS[eng]} />
-                    ))}
-                  </div>
-                  {isExp && (
-                    <div
-                      style={{
-                        padding: "0 16px 12px 44px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 12,
-                      }}
-                    >
-                      <ElementCard html={e.html} />
-                      {e.axe.length > 0 && (
-                        <EngineFindings label="axe-core" color="#dc2626">
-                          {e.axe.map((f, i) => (
-                            <div
-                              key={i}
-                              style={{
-                                fontSize: 12,
-                                color: "var(--text, #1f2937)",
-                              }}
-                            >
-                              <strong>{f.ruleId}</strong> ({f.impact}) —{" "}
-                              {f.desc}
-                            </div>
-                          ))}
-                        </EngineFindings>
-                      )}
-                      {e.htmlcs.length > 0 && (
-                        <EngineFindings
-                          label="HTML_CodeSniffer"
-                          color="#7c3aed"
-                        >
-                          {e.htmlcs.map((f, i) => (
-                            <div
-                              key={i}
-                              style={{ fontSize: 12, lineHeight: 1.4 }}
-                            >
-                              <Badge
-                                label={f.type}
-                                color={
-                                  f.type === "error" ? "#dc2626" : "#ca8a04"
-                                }
-                              />{" "}
-                              <code style={{ fontSize: 11 }}>{f.code}</code> —{" "}
-                              {f.msg}
-                            </div>
-                          ))}
-                        </EngineFindings>
-                      )}
-                      {e.ace.length > 0 && (
-                        <EngineFindings
-                          label="IBM Equal Access"
-                          color="#0891b2"
-                        >
-                          {e.ace.map((f, i) => (
-                            <div
-                              key={i}
-                              style={{ fontSize: 12, lineHeight: 1.4 }}
-                            >
-                              <Badge
-                                label={
-                                  f.level === "violation"
-                                    ? "violation"
-                                    : "potential"
-                                }
-                                color={
-                                  f.level === "violation"
-                                    ? "#dc2626"
-                                    : "#ca8a04"
-                                }
-                              />{" "}
-                              <strong>{f.ruleId}</strong> — {f.message}
-                            </div>
-                          ))}
-                        </EngineFindings>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </Card>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1427,7 +1947,7 @@ function ScanProgress({ progress }) {
                 />
                 {p.incompleteCount > 0 && (
                   <Badge
-                    label={`review ${p.incompleteCount}`}
+                    label={`${p.incompleteCount} potential issue${p.incompleteCount !== 1 ? "s" : ""}`}
                     color="#ca8a04"
                   />
                 )}
@@ -1466,6 +1986,7 @@ export default function App() {
   const [expandedV, setExpandedV] = useState(null);
   const [selectedUrls, setSelectedUrls] = useState(new Set());
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
+  const [wcagLevel, setWcagLevel] = useState(DEFAULT_WCAG_LEVEL);
   const [showSettings, setShowSettings] = useState(false);
   const [apiError, setApiError] = useState(null);
   const abortRef = useRef(null);
@@ -1492,27 +2013,31 @@ export default function App() {
           auth.username &&
           auth.password;
 
-        const newUrls = config.urls.map((u, i) => ({
-          id: `${Date.now()}-${i}`,
-          url: u.url,
-          label: u.label || u.url,
-          description: u.description || "",
-          requiresAuth: u.requiresAuth || false,
-          loginConfig: u.requiresAuth
-            ? {
-                loginUrl: auth.loginUrl || EMPTY_LOGIN.loginUrl,
-                usernameLabel:
-                  auth.usernameSelector || EMPTY_LOGIN.usernameLabel,
-                usernameValue: cleanVal(auth.username),
-                passwordLabel:
-                  auth.passwordSelector || EMPTY_LOGIN.passwordLabel,
-                passwordValue: cleanVal(auth.password),
-                submitSelector:
-                  auth.submitSelector || EMPTY_LOGIN.submitSelector,
-                extraFields: [],
-              }
-            : { ...EMPTY_LOGIN },
-        }));
+        const newUrls = config.urls.map((entry, i) => {
+          const u = typeof entry === "string" ? { url: entry } : entry;
+          return {
+            id: `${Date.now()}-${i}`,
+            url: u.url,
+            label: u.label || u.url,
+            description: u.description || "",
+            wildcard: normalizeWildcardConfig(u),
+            requiresAuth: u.requiresAuth || false,
+            loginConfig: u.requiresAuth
+              ? {
+                  loginUrl: auth.loginUrl || EMPTY_LOGIN.loginUrl,
+                  usernameLabel:
+                    auth.usernameSelector || EMPTY_LOGIN.usernameLabel,
+                  usernameValue: cleanVal(auth.username),
+                  passwordLabel:
+                    auth.passwordSelector || EMPTY_LOGIN.passwordLabel,
+                  passwordValue: cleanVal(auth.password),
+                  submitSelector:
+                    auth.submitSelector || EMPTY_LOGIN.submitSelector,
+                  extraFields: [],
+                }
+              : { ...EMPTY_LOGIN },
+          };
+        });
 
         setUrls(newUrls);
         setScans([]);
@@ -1543,6 +2068,7 @@ export default function App() {
         url: u.url,
         label: u.label,
         description: u.description || "",
+        wildcard: u.wildcard,
         requiresAuth: u.requiresAuth,
       })),
     };
@@ -1569,7 +2095,9 @@ export default function App() {
 
   const deleteUrl = (id) => {
     setUrls((prev) => prev.filter((u) => u.id !== id));
-    setScans((prev) => prev.filter((s) => s.urlId !== id));
+    setScans((prev) =>
+      prev.filter((s) => s.urlId !== id && s.sourceUrlId !== id),
+    );
     setSelectedUrls((prev) => {
       const n = new Set(prev);
       n.delete(id);
@@ -1592,9 +2120,16 @@ export default function App() {
   };
 
   const runScan = useCallback(async () => {
-    const toScan =
+    const selectedEntries =
       selectedUrls.size > 0 ? urls.filter((u) => selectedUrls.has(u.id)) : urls;
+    const toScan = expandUrlEntries(selectedEntries);
     if (toScan.length === 0) return;
+    if (toScan.length > 20) {
+      setApiError(
+        "Maximum 20 URLs per scan. Narrow the wildcard range or selection.",
+      );
+      return;
+    }
 
     setScanning(true);
     setApiError(null);
@@ -1619,7 +2154,7 @@ export default function App() {
       const res = await fetch(`${apiUrl.replace(/\/+$/, "")}/scan/batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: batchPayload }),
+        body: JSON.stringify({ urls: batchPayload, wcagLevel }),
         signal: controller.signal,
       });
 
@@ -1687,6 +2222,8 @@ export default function App() {
                 {
                   id: `${matchingUrl.id}-${Date.now()}`,
                   urlId: matchingUrl.id,
+                  sourceUrlId: matchingUrl.sourceUrlId,
+                  url: matchingUrl.url,
                   timestamp: result.timestamp,
                   violations,
                   incomplete,
@@ -1696,6 +2233,7 @@ export default function App() {
                   aceError: result.aceError,
                   reconciled,
                   passes: result.passes,
+                  wcagLevel,
                 },
               ]);
               setScanProgress((prev) =>
@@ -1719,6 +2257,8 @@ export default function App() {
                 {
                   id: `${matchingUrl.id}-${Date.now()}`,
                   urlId: matchingUrl.id,
+                  sourceUrlId: matchingUrl.sourceUrlId,
+                  url: matchingUrl.url,
                   timestamp: Date.now(),
                   violations: [],
                   incomplete: [],
@@ -1743,7 +2283,7 @@ export default function App() {
       setScanning(false);
       abortRef.current = null;
     }
-  }, [urls, selectedUrls, apiUrl]);
+  }, [urls, selectedUrls, apiUrl, wcagLevel]);
 
   const cancelScan = () => {
     if (abortRef.current) abortRef.current.abort();
@@ -1776,17 +2316,33 @@ export default function App() {
           <div
             style={{ fontSize: 13, color: "var(--text-secondary, #6b7280)" }}
           >
-            WCAG 2.1 Continuous Monitoring
+            WCAG Continuous Monitoring
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "flex-end",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
           <Btn
             variant="ghost"
             onClick={() => setShowSettings(true)}
-            style={{ fontSize: 12, padding: "6px 10px" }}
+            style={{ fontSize: 12, padding: "8px 10px" }}
           >
             ⚙ API Settings
           </Btn>
+          <Select
+            label="WCAG level"
+            value={wcagLevel}
+            onChange={setWcagLevel}
+            options={WCAG_LEVEL_OPTIONS}
+            disabled={scanning}
+            style={{ minWidth: 150 }}
+          />
           {scanning ? (
             <Btn variant="danger" onClick={cancelScan}>
               Cancel Scan
@@ -2032,10 +2588,24 @@ export default function App() {
             </Card>
           ) : (
             urls.map((u) => {
-              const urlScans = scans.filter((s) => s.urlId === u.id);
-              const latest = urlScans[urlScans.length - 1];
+              const expandedUrls = expandUrlEntry(u);
+              const latestScans = expandedUrls
+                .map((expandedUrl) => {
+                  const urlScans = scans.filter(
+                    (s) => s.urlId === expandedUrl.id,
+                  );
+                  return urlScans[urlScans.length - 1];
+                })
+                .filter(Boolean);
+              const latest = latestScans[latestScans.length - 1];
               const totalV =
-                latest && !latest.error ? latest.violations.length : null;
+                latestScans.length > 0
+                  ? latestScans.reduce(
+                      (sum, scan) =>
+                        scan.error ? sum : sum + scan.violations.length,
+                      0,
+                    )
+                  : null;
               return (
                 <Card
                   key={u.id}
@@ -2067,6 +2637,17 @@ export default function App() {
                         }}
                       >
                         {u.url}
+                      </div>
+                    )}
+                    {u.wildcard?.enabled && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--text-secondary, #6b7280)",
+                          marginTop: 2,
+                        }}
+                      >
+                        Expands {u.wildcard.start} to {u.wildcard.end}
                       </div>
                     )}
                     {u.description && (
