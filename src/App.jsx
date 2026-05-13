@@ -416,6 +416,41 @@ function expandUrlEntries(urls) {
   return urls.flatMap(expandUrlEntry);
 }
 
+function normalizeWildcardConfig(urlEntry) {
+  const wildcard = urlEntry.wildcard || {};
+  const range = urlEntry.range || {};
+  const start =
+    wildcard.start ??
+    range.start ??
+    urlEntry.wildcardStart ??
+    urlEntry.rangeStart ??
+    "1";
+  const end =
+    wildcard.end ??
+    range.end ??
+    urlEntry.wildcardEnd ??
+    urlEntry.rangeEnd ??
+    "13";
+  const hasImportedRange =
+    urlEntry.wildcard ||
+    urlEntry.range ||
+    urlEntry.wildcardStart !== undefined ||
+    urlEntry.wildcardEnd !== undefined ||
+    urlEntry.rangeStart !== undefined ||
+    urlEntry.rangeEnd !== undefined;
+
+  return {
+    enabled: Boolean(
+      wildcard.enabled ??
+        range.enabled ??
+        (hasImportedRange &&
+          String(urlEntry.url || "").includes(URL_WILDCARD_TOKEN)),
+    ),
+    start: String(start),
+    end: String(end),
+  };
+}
+
 function normalizeFindingText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -1454,32 +1489,31 @@ export default function App() {
           auth.username &&
           auth.password;
 
-        const newUrls = config.urls.map((u, i) => ({
-          id: `${Date.now()}-${i}`,
-          url: u.url,
-          label: u.label || u.url,
-          description: u.description || "",
-          wildcard: u.wildcard || {
-            enabled: false,
-            start: "1",
-            end: "13",
-          },
-          requiresAuth: u.requiresAuth || false,
-          loginConfig: u.requiresAuth
-            ? {
-                loginUrl: auth.loginUrl || EMPTY_LOGIN.loginUrl,
-                usernameLabel:
-                  auth.usernameSelector || EMPTY_LOGIN.usernameLabel,
-                usernameValue: cleanVal(auth.username),
-                passwordLabel:
-                  auth.passwordSelector || EMPTY_LOGIN.passwordLabel,
-                passwordValue: cleanVal(auth.password),
-                submitSelector:
-                  auth.submitSelector || EMPTY_LOGIN.submitSelector,
-                extraFields: [],
-              }
-            : { ...EMPTY_LOGIN },
-        }));
+        const newUrls = config.urls.map((entry, i) => {
+          const u = typeof entry === "string" ? { url: entry } : entry;
+          return {
+            id: `${Date.now()}-${i}`,
+            url: u.url,
+            label: u.label || u.url,
+            description: u.description || "",
+            wildcard: normalizeWildcardConfig(u),
+            requiresAuth: u.requiresAuth || false,
+            loginConfig: u.requiresAuth
+              ? {
+                  loginUrl: auth.loginUrl || EMPTY_LOGIN.loginUrl,
+                  usernameLabel:
+                    auth.usernameSelector || EMPTY_LOGIN.usernameLabel,
+                  usernameValue: cleanVal(auth.username),
+                  passwordLabel:
+                    auth.passwordSelector || EMPTY_LOGIN.passwordLabel,
+                  passwordValue: cleanVal(auth.password),
+                  submitSelector:
+                    auth.submitSelector || EMPTY_LOGIN.submitSelector,
+                  extraFields: [],
+                }
+              : { ...EMPTY_LOGIN },
+          };
+        });
 
         setUrls(newUrls);
         setScans([]);

@@ -67,6 +67,23 @@ The scanner configuration includes:
   define the numeric range to scan pages such as `/levels/1` through
   `/levels/13`.
 
+Imported JSON can include wildcard ranges using the exported shape:
+
+```json
+{
+  "urls": [
+    {
+      "url": "https://example.com/levels/*",
+      "label": "Example levels",
+      "wildcard": { "enabled": true, "start": "1", "end": "13" }
+    }
+  ]
+}
+```
+
+The importer also accepts `"range": { "start": 1, "end": 13 }` or top-level
+`wildcardStart` / `wildcardEnd` fields on a URL entry.
+
 ## Notes
 
 - All state is in-memory — refreshing the page clears URLs and results.
